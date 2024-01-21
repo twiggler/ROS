@@ -5,17 +5,23 @@
 #include <numeric>
 #include <utility>
 #include "memory/memory.hpp"
+#include "memory/allocator.hpp"
 #include "cpu/cpu.hpp"
 #include "error/error.hpp"
+#include "kernel.hpp"
 
-// imported virtual addresses, see linker script
-extern BOOTBOOT bootboot;               // see bootboot.h
-extern unsigned char environment[4096]; // configuration, UTF-8 text key=value pairs
+// BOOTBOOT imported virtual addresses, see see linker script
+extern BOOTBOOT bootboot;
+extern unsigned char environment[4096];
 extern std::uint32_t fb;                // linear framebuffer mapped
 
 constexpr std::size_t frameSize = 1024 * 4;
 
 using namespace Memory;
+
+// Statically reserve buffer to hold the page frame allocator and page mapper
+alignas(PageFrameAllocator) unsigned char frameAllocatorBuffer[sizeof(PageFrameAllocator)];
+alignas(PageMapper) unsigned char pageMapperBuffer[sizeof(PageMapper)];
 
 FrameBufferInfo getFrameBufferInfo() {
     return {
@@ -27,11 +33,12 @@ FrameBufferInfo getFrameBufferInfo() {
     };
 }
 
-PageFrameAllocator makePageFrameAllocator() {
+// Side effect: frame allocator is constructed in-place at "frameAllocatorBuffer".
+PageFrameAllocator& makePageFrameAllocator() {
     auto numberOfMemoryMapEntries = (bootboot.size - 128) / 16;
     auto memoryMap = std::span(&bootboot.mmap, numberOfMemoryMapEntries); 
     
-    auto sizeAccumulator =  [](auto acc, auto block) { return acc + block.size; };
+    auto sizeAccumulator =  [](auto acc, auto block) { return acc + MMapEnt_Size(&block); };
     auto totalMemory = std::accumulate(memoryMap.begin(), memoryMap.end(), std::size_t(0), sizeAccumulator); 
 
     std::ranges::forward_range auto alignedBlocks = memoryMap
@@ -46,66 +53,101 @@ PageFrameAllocator makePageFrameAllocator() {
     }
 
     auto justEnoughStorage = (*storageBlock).resize(requiredSpace);
-    auto allocator = PageFrameAllocator(justEnoughStorage, totalMemory, frameSize);
+    auto allocator = new(frameAllocatorBuffer) PageFrameAllocator(justEnoughStorage, totalMemory, frameSize);
 
     for (auto block : alignedBlocks) {
-        if (block.ptr == (*storageBlock).ptr) {
-            block.ptr += requiredSpace;
+        if (block.startAddress == (*storageBlock).startAddress) {
+            block.startAddress += requiredSpace;
             block.size -= requiredSpace;
             block = block.align(frameSize);
         }
         
-        auto startAddress = block.ptr;
-        while (startAddress < block.ptr + block.size) {
-            allocator.dealloc(reinterpret_cast<void*>(block.ptr));
+        auto startAddress = block.startAddress;
+        while (startAddress < block.startAddress + block.size) {
+            allocator->dealloc(reinterpret_cast<void*>(startAddress));
             startAddress += frameSize;
         } 
     }
 
-    return allocator;
+    return *allocator;
 }
 
-void patchMemoryLayout(PageFrameAllocator& frameAllocator) {
+PageMapper& makePageMapper(PageFrameAllocator& frameAllocator) {
     auto level4Table = reinterpret_cast<std::uint64_t*>(Register::CR3::read());
-    auto pageMapper = PageMapper(level4Table, 0 /* Bootboot identity maps first 16GB */, frameAllocator);
+    auto pageMapper = new (pageMapperBuffer) PageMapper(level4Table, 0 /* Bootboot identity maps first 16GB */, frameAllocator);
+    return *pageMapper;
+}
 
+std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMemory) {
     // Map all physical memory to start of higher half virtual address space. 
-    constexpr auto physicalOffset = std::uintptr_t(0xffff'8000'0000'0000); // Start of higher half
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
-    for (auto physicalAddress = std::uint64_t(0); physicalAddress < frameAllocator.physicalMemory(); physicalAddress += 1_GiB) {
-        auto mapResult = pageMapper.map(physicalOffset + physicalAddress, physicalAddress, PageSize::_1GiB, flags);
+    
+    // 00000000 00000000 - 00007FFF FFFFFFFF (lower half)
+    // 00008000 00000000 - FFFF7FFF FFFFFFFF (the hole, not valid)
+    // FFFF8000 00000000 - FFFFFFFF FFFFFFFF (higher half)
+    constexpr auto higherHalf = std::uintptr_t(0xffff'8000'0000'0000);
+    auto virtualAddress = higherHalf;
+    // VERIFY: is this all physical memory? Compare sum(block.size) with max(block.start + block.size)
+    for (auto physicalAddress = std::uint64_t(0); physicalAddress < physicalMemory; physicalAddress += 1_GiB) {
+        auto mapResult = pageMapper.map(virtualAddress, physicalAddress, PageSize::_1GiB, flags);
         if (mapResult != 0) {
             panic("Cannot map physical memory");
         } 
+        virtualAddress += 1_GiB;
     }
 
-    // Delete identity mapping.
-    pageMapper.relocate(physicalOffset);
-    auto virtualAddress = std::uint64_t(0);
+    // Delete identity mapping constructed by BOOTBOOT.
+    pageMapper.relocate(higherHalf);
+    auto physicalAddress = std::uint64_t(0);
     do {
-        auto unmappedBytes = pageMapper.unmap(virtualAddress);
+        auto unmappedBytes = pageMapper.unmap(physicalAddress);
         if (unmappedBytes == 0) {
             panic("Unexpected memory layout");
         }
-        virtualAddress += unmappedBytes;
-    } while (virtualAddress < 16_GiB);
+        physicalAddress += unmappedBytes;
+    } while (physicalAddress < 16_GiB);
 
     Register::CR3::flushTLBS();
-
+    return virtualAddress;
 }
 
-void makeKernel() {
-    auto frameAllocator = makePageFrameAllocator();
-    patchMemoryLayout(frameAllocator);
+auto makeHeap(PageFrameAllocator& frameAllocator, PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
+    for (auto i = std::size_t(0); i < heapSizeInFrames; i++) {
+        auto block = frameAllocator.alloc();
+        if (block.size == 0) {
+            panic("Not enough memory for kernel heap");
+        }
+        
+        constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
+        auto mapResult = pageMapper.map(heapStart + i * 4_KiB, block.startAddress, PageSize::_4KiB, flags);
+        if (mapResult != 0) {
+            panic("Cannot map kernel heap");
+        }
+    }
+    Register::CR3::flushTLBS();
     
-    panic("Memory layout patched.");
+    auto heapPtr = reinterpret_cast<void*>(heapStart);
+    // Problem: null_memory_resource, monotonic_buffer_resource, might throw on alloc.
+    return BumpAllocator(heapPtr, heapSizeInFrames * 4_KiB);
+}
+
+Kernel makeKernel() {
+    auto& frameAllocator = makePageFrameAllocator();
+    auto& pageMapper = makePageMapper(frameAllocator);
+    auto heapStart = patchMemoryLayout(pageMapper, frameAllocator.physicalMemory());
+    auto heap = makeHeap(frameAllocator, pageMapper, heapStart, 1);
+    auto cpu = heap.construct<Cpu>();
+    
+    return Kernel(frameAllocator, pageMapper, *cpu);
 }
 
 int main()
 {
     initializePanicHandler(getFrameBufferInfo());
+   
+    auto kernel = makeKernel();
 
-    makeKernel();
+    panic("Kernel constructed");
 
     return 0;
 }

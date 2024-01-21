@@ -1,13 +1,14 @@
 #pragma once
 #include "memory/memory.hpp"
+#include "cpu/cpu.hpp"
 
 class Kernel {
 public:
-    Kernel(Memory::PageFrameAllocator frameAllocator);    
+    Kernel(Memory::PageFrameAllocator& frameAllocator, Memory::PageMapper& pageMapper, Cpu& cpu);    
 
 private:
-    void initialize();
-
-    Memory::PageFrameAllocator frameAllocator;
-    Memory::PageMapper* pageMapper;
+    Memory::PageFrameAllocator* frameAllocator;
+    Memory::PageMapper*         pageMapper;
+    Cpu*                        cpu;  
 };
+

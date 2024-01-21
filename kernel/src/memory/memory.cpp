@@ -4,13 +4,13 @@ namespace Memory {
 
 Block Block::align(std::size_t alignment) const {
     auto alignmentMask = alignment - 1;
-    auto alignedStartAddress = (ptr + alignmentMask) & ~alignmentMask;
-    auto alignedSize = (size - (alignedStartAddress - ptr)) & ~alignmentMask;
+    auto alignedStartAddress = (startAddress + alignmentMask) & ~alignmentMask;
+    auto alignedSize = (size - (alignedStartAddress - startAddress)) & ~alignmentMask;
     return { alignedStartAddress, alignedSize <= size ? alignedSize : 0 };
 }
 
 Block Block::resize(std::size_t newSize) const { 
-    return Block{ptr, newSize };
+    return Block{startAddress, newSize };
 }
 
 std::size_t PageFrameAllocator::requiredStorage(std::size_t numberOfFrames) {
@@ -18,7 +18,7 @@ std::size_t PageFrameAllocator::requiredStorage(std::size_t numberOfFrames) {
 }
 
 PageFrameAllocator::PageFrameAllocator(Block storage, std::size_t physicalMemory, std::size_t frameSize) :
-    base(reinterpret_cast<uintptr_t*>(storage.ptr)),
+    base(reinterpret_cast<uintptr_t*>(storage.startAddress)),
     top(base),
     _physicalMemory(physicalMemory),
     frameSize(frameSize) {}
@@ -41,7 +41,7 @@ void PageFrameAllocator::dealloc(void *ptr) {
 
 void PageFrameAllocator::relocate(std::uintptr_t newOffset) {
     auto newBase = reinterpret_cast<std::uintptr_t>(base) + newOffset;
-    top = reinterpret_cast<std::uintptr_t*>(newBase + (top - base));
+    top = reinterpret_cast<std::uintptr_t*>(newBase) + (top - base); 
     base = reinterpret_cast<std::uintptr_t*>(newBase);
 }    
 
@@ -49,19 +49,19 @@ VirtualAddress::VirtualAddress(std::uintptr_t address) :
     address(address) {}
 
 std::uint16_t VirtualAddress::indexLevel4() const { 
-    return (address & 0xFF80'0000'0000) >> 39;
+    return address >> 39 & 0x1ff;
 }
 
 std::uint16_t VirtualAddress::indexLevel3() const { 
-    return (address & 0x7F'C000'0000) >> 30;
+    return address >> 30 & 0x1ff;
 }
 
 std::uint16_t VirtualAddress::indexLevel2() const { 
-    return (address & 0x3FE0'0000) >> 21;
+    return address >> 21 & 0x1ff;
 }
 
 std::uint16_t VirtualAddress::indexLevel1() const { 
-    return (address & 0x1F'F000) >> 12;
+    return address >> 12 & 0x1ff;
 }
 
 VirtualAddress::operator std::uintptr_t() const {
@@ -205,11 +205,16 @@ std::uint64_t *PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) {
     if (newTableBlock.size == 0) {
         return nullptr;
     }
+    auto tablePtr = reinterpret_cast<std::uint64_t*>(offset + newTableBlock.startAddress);
+    for (auto i = 0; i < 512; i++) {
+        tablePtr[i] = PageTableEntry::empty(); 
+    }    
+
     rawParentEntry = PageTableEntry()
-        .setPhysicalAddress(newTableBlock.ptr)
+        .setPhysicalAddress(newTableBlock.startAddress)
         .setFlags(PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible);
 
-    return reinterpret_cast<std::uint64_t*>(newTableBlock.ptr);
+    return tablePtr;
 }
 
 } // namespace Memory

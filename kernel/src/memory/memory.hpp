@@ -17,10 +17,9 @@ constexpr std::size_t operator ""_MiB(unsigned long long int x) {
 constexpr std::size_t operator ""_GiB(unsigned long long int x) {
   return 1024_MiB * x;
 }
- 
 
 struct Block {
-    std::uintptr_t ptr;
+    std::uintptr_t startAddress;
     std::size_t size;
 
     /**

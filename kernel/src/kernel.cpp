@@ -1,11 +1,8 @@
 #include "kernel.hpp"
 
-Kernel::Kernel(Memory::PageFrameAllocator frameAllocator) :
-    frameAllocator(std::move(frameAllocator))
-{
-    initialize();
-}
+using namespace Memory;
 
-void Kernel::initialize() {
-
-}
+Kernel::Kernel(PageFrameAllocator& frameAllocator, PageMapper& pageMapper, Cpu& cpu) :
+    frameAllocator(&frameAllocator),
+    pageMapper(&pageMapper),
+    cpu(&cpu) { }
