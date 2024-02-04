@@ -4,8 +4,9 @@ global setGdt
 
 ; rdi:  gdt limit 
 ; rsi:  gdt base
-; dx:  code segment
-; cx:  data segment 
+; dx:  code segment descriptor index
+; cx:  data segment descriptor index
+; r8:  task segment descriptor index  
 setGdt:
     push    rbp
     mov     rbp, rsp
@@ -29,6 +30,10 @@ setGdt:
     mov     fs, cx
     mov     gs, cx
     mov     ss, cx
+
+    ; Load task register
+    shl     r8w, 3
+    ltr     r8w
 
     mov     rsp, rbp
     pop     rbp

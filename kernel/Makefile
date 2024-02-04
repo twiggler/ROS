@@ -13,7 +13,7 @@ $(OBJ_DIR)/kernel.x86_64.elf: $(OBJ_FILES) ${OBJ_DIR}/cpu_asm.o $(OBJ_DIR)/font.
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(@D)
-	g++ $(CPPFLAGS) -c -o $@ $<
+	g++ $(CPPFLAGS) -MMD -MP -c -o $@ $<
 
 $(OBJ_DIR)/cpu_asm.o: $(SRC_DIR)/cpu/cpu.asm
 	nasm -f elf64 -o $@ $< 

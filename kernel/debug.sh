@@ -2,6 +2,7 @@
 
 # Start ROS in qemu
 
+make
 tmp_dir=$(mktemp -d -t)
 echo Creating boot disk in $tmp_dir
 mkdir -p $tmp_dir/EFI/BOOT

@@ -87,7 +87,6 @@ std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMem
     // FFFF8000 00000000 - FFFFFFFF FFFFFFFF (higher half)
     constexpr auto higherHalf = std::uintptr_t(0xffff'8000'0000'0000);
     auto virtualAddress = higherHalf;
-    // VERIFY: is this all physical memory? Compare sum(block.size) with max(block.start + block.size)
     for (auto physicalAddress = std::uint64_t(0); physicalAddress < physicalMemory; physicalAddress += 1_GiB) {
         auto mapResult = pageMapper.map(virtualAddress, physicalAddress, PageSize::_1GiB, flags);
         if (mapResult != 0) {
@@ -135,10 +134,10 @@ Kernel makeKernel() {
     auto& frameAllocator = makePageFrameAllocator();
     auto& pageMapper = makePageMapper(frameAllocator);
     auto heapStart = patchMemoryLayout(pageMapper, frameAllocator.physicalMemory());
-    auto heap = makeHeap(frameAllocator, pageMapper, heapStart, 1);
-    auto cpu = heap.construct<Cpu>();
+    auto allocator = makeHeap(frameAllocator, pageMapper, heapStart, 1);
+    auto& cpu = Cpu::makeCpu(allocator);
     
-    return Kernel(frameAllocator, pageMapper, *cpu);
+    return Kernel(frameAllocator, pageMapper, cpu);
 }
 
 int main()
