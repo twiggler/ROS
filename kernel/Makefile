@@ -1,4 +1,4 @@
-CPPFLAGS = -g -std=c++20 -Wall -fpic -ffreestanding -fno-stack-protector -fno-exceptions -fno-rtti -nostdlib -mno-red-zone -I./bootboot/dist/
+CPPFLAGS = -g -std=c++20 -Wall -fpic -ffreestanding -fno-stack-protector -fno-exceptions -fno-rtti -nostdlib -mno-red-zone -mgeneral-regs-only -I./bootboot/dist/
 LDFLAGS = -g -nostdlib -n -T link.ld
 STRIPFLAGS = -s -K mmio -K fb -K bootboot -K environment -K initstack
 SRC_DIR := src

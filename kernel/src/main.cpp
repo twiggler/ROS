@@ -134,7 +134,7 @@ Kernel makeKernel() {
     auto& frameAllocator = makePageFrameAllocator();
     auto& pageMapper = makePageMapper(frameAllocator);
     auto heapStart = patchMemoryLayout(pageMapper, frameAllocator.physicalMemory());
-    auto allocator = makeHeap(frameAllocator, pageMapper, heapStart, 1);
+    auto allocator = makeHeap(frameAllocator, pageMapper, heapStart, 4);
     auto& cpu = Cpu::makeCpu(allocator);
     
     return Kernel(frameAllocator, pageMapper, cpu);
@@ -145,8 +145,6 @@ int main()
     initializePanicHandler(getFrameBufferInfo());
    
     auto kernel = makeKernel();
-
-    panic("Kernel constructed");
 
     return 0;
 }

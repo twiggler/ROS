@@ -4,6 +4,8 @@
 
 extern "C" void setGdt(std::uint16_t size, std::uint64_t* base, std::uint16_t codeSegment, std::uint16_t dataSegment, std::uint16_t tssSegment);
 
+extern "C" void setIdt(std::uint16_t size, IdtDescriptor* base);
+
 struct GdtAccess {
     using Type = std::uint8_t;
     static constexpr auto ReadableWritable = Type(1) << 1;
@@ -14,6 +16,13 @@ struct GdtAccess {
     static constexpr auto TSS = Type(0x9);
 };
 
+struct InterruptFrame {
+    std::uint64_t rip;
+    std::uint64_t cs;
+    std::uint64_t flags;
+    std::uint64_t rsp;
+    std::uint64_t ss;
+};
 
 constexpr std::uint64_t makeSegmentDescriptor(GdtAccess::Type access) {
     auto entry = std::uint64_t(access) << 40; 
@@ -39,9 +48,28 @@ constexpr std::tuple<std::uint64_t, std::uint64_t> makeTaskStateSegmentDescripto
     return {lowerEntry, higherEntry};
 }
 
-Cpu::Cpu(Memory::Allocator& allocator) : gdt{ 0 }, tss{} {
-    setupTss(allocator);
-    setupGdt();
+constexpr IdtDescriptor makeGateDescriptor(std::uintptr_t isrAddress, std::uint16_t codeSegmentIndex, GateType gateType, std::uint8_t istIndex) {
+    auto codesegmentSelector = codeSegmentIndex << 3;
+    
+    auto low = isrAddress & 0xffff;
+    low |= std::uint64_t(codeSegmentIndex) << 3 << 16;
+    low |= std::uint64_t(istIndex & 7) << 32;
+    low |= (static_cast<std::uint64_t>(gateType) & 0xf) << 40;
+    low |= std::uint64_t(1) << 47;
+    low |= (isrAddress & 0xffff0000) >> 16 << 48;
+    
+    auto high = isrAddress >> 32;
+    return { low, high};
+}
+
+__attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::uint64_t errorCode) {
+    // In response to a double fault we should abort.
+    panic("Double fault");
+};
+
+Cpu::Cpu(Memory::Allocator& allocator) : gdt{ 0 }, idt{ 0 }, tss{} {
+    setupGdt(allocator);
+    setupIdt();
 }
 
 Cpu* Cpu::instance = nullptr;
@@ -63,19 +91,23 @@ Cpu& Cpu::getInstance() {
     return *Cpu::instance;
 }
 
-void Cpu::setupGdt() {
+void Cpu::setupGdt(Memory::Allocator& allocator) {
     constexpr auto DataSegmentAccess = GdtAccess::CodeDataSegment
                                       | GdtAccess::Present
                                       | GdtAccess::ReadableWritable;
     constexpr auto CodeSegmentAccess = DataSegmentAccess | GdtAccess::Executable;
-    constexpr auto KernelCodeSegment = 1;
     constexpr auto KernelDataSegment = 2;
     constexpr auto TssSegmentBase = 5;
-    auto tssVirtualAddress = reinterpret_cast<uintptr_t>(&tss);
+
+    // Construct tss
+    constexpr auto interruptStackSize = std::size_t(1024);
+    auto interruptStack = allocator.allocate(interruptStackSize, 16);
+    tss.ist[IstIndex - 1] = reinterpret_cast<std::uintptr_t>(interruptStack) + interruptStackSize; 
+    tss.iobp = sizeof(TaskStateSegment); // No IOBP
 
     gdt[0] = 0;
     // Kernel code segment
-    gdt[KernelCodeSegment] = makeSegmentDescriptor(CodeSegmentAccess);
+    gdt[KernelCodeSegmentIndex] = makeSegmentDescriptor(CodeSegmentAccess);
     // Kernel data segment
     gdt[KernelDataSegment] = makeSegmentDescriptor(DataSegmentAccess);
     // User code segment
@@ -83,18 +115,15 @@ void Cpu::setupGdt() {
     // User data segment
     gdt[4] = makeSegmentDescriptor(DataSegmentAccess | GdtAccess::UserMode);
     // Tss segment
-    std::tie(gdt[TssSegmentBase], gdt[TssSegmentBase + 1]) = makeTaskStateSegmentDescriptor(tssVirtualAddress);
+    std::tie(gdt[TssSegmentBase], gdt[TssSegmentBase + 1]) = makeTaskStateSegmentDescriptor(reinterpret_cast<uintptr_t>(&tss));
 
-    setGdt(sizeof(gdt), gdt, KernelCodeSegment, KernelDataSegment, TssSegmentBase);
+    setGdt(sizeof(gdt), gdt, KernelCodeSegmentIndex, KernelDataSegment, TssSegmentBase);
 }
 
-void Cpu::setupTss(Memory::Allocator& allocator) {
-    constexpr auto interruptStackSize = std::size_t(1024);
-    auto interruptStack = allocator.allocate(interruptStackSize, 16);
+void Cpu::setupIdt() {
+    idt[8] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&doubleFaultHandler), KernelCodeSegmentIndex, GateType::Trap, IstIndex);
 
-    tss.ist[0] = reinterpret_cast<std::uintptr_t>(interruptStack); 
-    // No IOBP
-    tss.iobp = sizeof(TaskStateSegment);
+    setIdt(sizeof(idt), idt);
 }
 
 std::uint64_t Register::CR3::read() {

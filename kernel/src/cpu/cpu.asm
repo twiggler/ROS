@@ -1,6 +1,7 @@
 section .text
 
 global setGdt
+global setIdt
 
 ; rdi:  gdt limit 
 ; rsi:  gdt base
@@ -20,10 +21,10 @@ setGdt:
     ; reload cs using a far return
     shl     dx, 3
     push    dx
-    lea     rax, [rel .reload_CS]
+    lea     rax, [rel .reloadCS]
     push    rax
     retfq
-.reload_CS:
+.reloadCS:
     shl     cx, 3
     mov     ds, cx
     mov     es, cx
@@ -39,3 +40,18 @@ setGdt:
     pop     rbp
     ret
 
+; rdi:  idt limit 
+; rsi:  idt base
+setIdt:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 2 + 8
+
+    dec     rdi ; Size minus 1
+    mov     [rbp-10], di
+    mov     [rbp-8], rsi
+    lidt    [rbp-10]
+
+    mov     rsp, rbp
+    pop     rbp
+    ret
