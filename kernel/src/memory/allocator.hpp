@@ -5,6 +5,8 @@
 
 
 namespace Memory {
+    
+    // No-throw interface for allocators.
     class Allocator {
     public:
         [[nodiscard]] void* allocate(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t));

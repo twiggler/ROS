@@ -145,6 +145,7 @@ int main()
     initializePanicHandler(getFrameBufferInfo());
    
     auto kernel = makeKernel();
+    kernel.run();
 
     return 0;
 }

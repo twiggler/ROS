@@ -67,7 +67,7 @@ __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::u
     panic("Double fault");
 };
 
-Cpu::Cpu(Memory::Allocator& allocator) : gdt{ 0 }, idt{ 0 }, tss{} {
+Cpu::Cpu(Memory::Allocator& allocator) : gdt{ 0 }, idt{ 0 }, tss{}, interruptBuffer{} {
     setupGdt(allocator);
     setupIdt();
 }
@@ -89,6 +89,14 @@ Cpu& Cpu::makeCpu(Memory::Allocator& allocator) {
 
 Cpu& Cpu::getInstance() {
     return *Cpu::instance;
+}
+
+void Cpu::halt() {
+    asm volatile ("hlt");
+}
+
+HardwareInterrupt* Cpu::consumeInterrupts(HardwareInterrupt *dest) {
+    return interruptBuffer.popAll(dest);
 }
 
 void Cpu::setupGdt(Memory::Allocator& allocator) {
@@ -129,7 +137,7 @@ void Cpu::setupIdt() {
 std::uint64_t Register::CR3::read() {
     std::uint64_t cr3;
 
-    __asm__ (
+    asm (
         "mov %%cr3, %%rax;"
         "mov %%rax, %0"
     : "=m" (cr3)
@@ -141,7 +149,7 @@ std::uint64_t Register::CR3::read() {
 };
 
 void Register::CR3::flushTLBS() {
-    __asm__ __volatile__ (
+    asm volatile (
         "mov %%cr3, %%rax;"
         "mov %%rax, %%cr3"
     : : : "%rax"

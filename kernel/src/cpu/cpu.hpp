@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include "../memory/allocator.hpp"
+#include <ringbuffer.hpp>
 #include <bit>
 
 namespace Register {
@@ -35,11 +36,21 @@ struct __attribute__((packed)) TaskStateSegment {
     std::uint16_t iobp;
 };
 
+struct HardwareInterrupt {
+    std::uint8_t IRQ;
+};
+
 class Cpu {
 public:
+    static constexpr auto InterruptBufferSize = std::size_t(256);
+    
     static Cpu& makeCpu(Memory::Allocator& allocator);
 
     static Cpu& getInstance();
+
+    static void halt();
+
+    HardwareInterrupt* consumeInterrupts(HardwareInterrupt *dest);
 
 private:
     friend class Memory::Allocator;
@@ -60,4 +71,5 @@ private:
     // during a task switch (the first 104 bytes)."
     alignas(std::bit_ceil(sizeof(TaskStateSegment)))
     TaskStateSegment tss;
+    rlib::RingBuffer<HardwareInterrupt, InterruptBufferSize> interruptBuffer;
 };

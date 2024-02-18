@@ -4,7 +4,9 @@
 
 class Kernel {
 public:
-    Kernel(Memory::PageFrameAllocator& frameAllocator, Memory::PageMapper& pageMapper, Cpu& cpu);    
+    Kernel(Memory::PageFrameAllocator& frameAllocator, Memory::PageMapper& pageMapper, Cpu& cpu);
+
+    void run();    
 
 private:
     Memory::PageFrameAllocator* frameAllocator;
