@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <numeric>
 #include <utility>
-#include "memory/memory.hpp"
+#include "memory/paging.hpp"
 #include "memory/allocator.hpp"
 #include "cpu/cpu.hpp"
 #include "error/error.hpp"
@@ -110,34 +110,26 @@ std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMem
     return virtualAddress;
 }
 
-auto makeHeap(PageFrameAllocator& frameAllocator, PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
-    for (auto i = std::size_t(0); i < heapSizeInFrames; i++) {
-        auto block = frameAllocator.alloc();
-        if (block.size == 0) {
-            panic("Not enough memory for kernel heap");
-        }
-        
-        constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
-        auto mapResult = pageMapper.map(heapStart + i * 4_KiB, block.startAddress, PageSize::_4KiB, flags);
-        if (mapResult != 0) {
-            panic("Cannot map kernel heap");
-        }
+auto makeHeap(PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
+    constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
+    auto result = pageMapper.allocateAndMapContiguous(heapStart, flags, heapSizeInFrames);
+    if (result != 0) {
+        panic("Cannot construct kernel heap");
     }
     Register::CR3::flushTLBS();
     
-    auto heapPtr = reinterpret_cast<void*>(heapStart);
     // Problem: null_memory_resource, monotonic_buffer_resource, might throw on alloc.
-    return BumpAllocator(heapPtr, heapSizeInFrames * 4_KiB);
+    return BumpAllocator(reinterpret_cast<void*>(heapStart), heapSizeInFrames * 4_KiB);
 }
 
 Kernel makeKernel() {
     auto& frameAllocator = makePageFrameAllocator();
     auto& pageMapper = makePageMapper(frameAllocator);
     auto heapStart = patchMemoryLayout(pageMapper, frameAllocator.physicalMemory());
-    auto allocator = makeHeap(frameAllocator, pageMapper, heapStart, 4);
-    auto& cpu = Cpu::makeCpu(allocator);
+    auto allocator = makeHeap(pageMapper, heapStart, 4);
+    auto& cpu = Cpu::makeCpu(allocator, 0xffffffff'ffffffff, 4_KiB);
     
-    return Kernel(frameAllocator, pageMapper, cpu);
+    return Kernel(pageMapper, cpu);
 }
 
 int main()

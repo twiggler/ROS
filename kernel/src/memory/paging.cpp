@@ -1,4 +1,4 @@
-#include "memory.hpp"
+#include "paging.hpp"
 
 namespace Memory {
 
@@ -103,48 +103,61 @@ constexpr std::uint64_t PageTableEntry::encodedPhysicalAddress(std::uint64_t add
     return address & std::uint64_t(0xF'FFFF'FFFF'F000); 
 }
 
+
+
 PageMapper::PageMapper(std::uint64_t *level4Table, std::uintptr_t offset, PageFrameAllocator& allocator) :
     tableLevel4(level4Table), offset(offset), frameAllocator(&allocator) {}
 
-int PageMapper::map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
+MapResult PageMapper::map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
     auto indexLevel4 = virtualAddress.indexLevel4();
     auto tableLevel3 = ensurePageTable(tableLevel4[indexLevel4]); 
     if (tableLevel3 == nullptr) {
-        return -1;
+        return MapResult::OUT_OF_PHYSICAL_MEMORY;
     }
 
     auto indexLevel3 = virtualAddress.indexLevel3();
     if (pageSize == PageSize::_1GiB) {
+        if (PageTableEntry(tableLevel3[indexLevel3]).isUsed()) {
+            return MapResult::ALREADY_MAPPED;
+        }
+        
         tableLevel3[indexLevel3] = PageTableEntry()
             .setPhysicalAddress(physicalAddress)
             .setFlags(flags | PageFlags::HugePage);
 
-        return 0;
+        return MapResult::OK;
     }
     auto tableLevel2 = ensurePageTable(tableLevel3[indexLevel3]);
     if (tableLevel2 == nullptr) {
-        return -1;
+        return MapResult::OUT_OF_PHYSICAL_MEMORY;
     }
 
     auto indexLevel2 = virtualAddress.indexLevel2();
     if (pageSize == PageSize::_2MiB) {
+         if (PageTableEntry(tableLevel2[indexLevel2]).isUsed()) {
+            return MapResult::ALREADY_MAPPED;
+        }
+
         tableLevel2[indexLevel2] = PageTableEntry()
             .setPhysicalAddress(physicalAddress)
             .setFlags(flags | PageFlags::HugePage);
 
-        return 0;
+        return MapResult::OK;
     }
     auto tableLevel1 = ensurePageTable(tableLevel2[indexLevel2]);
     if (tableLevel1 == nullptr) {
-        return -1;
+        return MapResult::OUT_OF_PHYSICAL_MEMORY;
     }
 
     auto indexLevel1 = virtualAddress.indexLevel1();
+    if (PageTableEntry(tableLevel1[indexLevel1]).isUsed()) {
+        return MapResult::ALREADY_MAPPED;
+    }
     tableLevel1[indexLevel1] = PageTableEntry()
         .setPhysicalAddress(physicalAddress)
         .setFlags(flags);
 
-    return 0;
+    return MapResult::OK;
 }
 
 std::size_t PageMapper::unmap(VirtualAddress virtualAddress) {
@@ -187,11 +200,31 @@ std::size_t PageMapper::unmap(VirtualAddress virtualAddress) {
     return 4_KiB;
 }
 
+MapResult PageMapper::allocateAndMap(VirtualAddress virtualAddress, PageFlags::Type flags) {
+    auto block = frameAllocator->alloc();
+    if (block.size == 0) {
+        return MapResult::OUT_OF_PHYSICAL_MEMORY;
+    }
+
+    return map(virtualAddress, block.startAddress, PageSize::_4KiB, flags);
+}
+
+MapResult PageMapper::allocateAndMapContiguous(VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
+    for (auto i = std::size_t(0); i < nFrames; i++) {
+        auto result = allocateAndMap(virtualAddress + i * 4_KiB, flags);
+        if (result != MapResult::OK) {
+            return result;
+        }
+    }
+    
+    return MapResult::OK;
+}
+
 void PageMapper::relocate(std::uintptr_t newOffset) {
     frameAllocator->relocate(newOffset);
     offset = newOffset;
     auto relocatedTableLevel4 = reinterpret_cast<std::uintptr_t>(tableLevel4) + newOffset;
-    tableLevel4 = reinterpret_cast<std::uintptr_t*>(relocatedTableLevel4);
+    tableLevel4 = reinterpret_cast<std::uintptr_t *>(relocatedTableLevel4);
 }
 
 std::uint64_t *PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) { 

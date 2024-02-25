@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "../memory/paging.hpp"
 #include "../memory/allocator.hpp"
 #include <ringbuffer.hpp>
 #include <bit>
@@ -44,17 +45,19 @@ class Cpu {
 public:
     static constexpr auto InterruptBufferSize = std::size_t(256);
     
-    static Cpu& makeCpu(Memory::Allocator& allocator);
+    static Cpu& makeCpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
 
     static Cpu& getInstance();
 
     static void halt();
 
+    void growStack(std::size_t newSize, Memory::PageMapper& pageMapper);
+
     HardwareInterrupt* consumeInterrupts(HardwareInterrupt *dest);
 
 private:
     friend class Memory::Allocator;
-    Cpu(Memory::Allocator& allocator);
+    Cpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
     static Cpu* instance;
     
     void setupGdt(Memory::Allocator& allocator);
@@ -64,6 +67,8 @@ private:
     static constexpr auto KernelCodeSegmentIndex = std::uint16_t(1);
     static constexpr auto IstIndex = std::uint8_t(1);
     
+    std::uintptr_t stackTop;
+    std::size_t stackSize; 
     uint64_t gdt[7];
     IdtDescriptor idt[256];
     // From the Intel 64 Architectures manual: Volume 3A 

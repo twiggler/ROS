@@ -2,12 +2,11 @@
 
 using namespace Memory;
 
-Kernel::Kernel(PageFrameAllocator& frameAllocator, PageMapper& pageMapper, Cpu& cpu) :
-    frameAllocator(&frameAllocator),
+Kernel::Kernel(PageMapper& pageMapper, Cpu& cpu) :
     pageMapper(&pageMapper),
     cpu(&cpu)
 {
-    // TODO: Expand stack to 64kb or something.
+    cpu.growStack(64_KiB, pageMapper);
 }
 
 void Kernel::run() {

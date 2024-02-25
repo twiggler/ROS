@@ -2,6 +2,8 @@
 #include "../error/error.hpp"
 #include <tuple>
 
+using namespace Memory;
+
 extern "C" void setGdt(std::uint16_t size, std::uint64_t* base, std::uint16_t codeSegment, std::uint16_t dataSegment, std::uint16_t tssSegment);
 
 extern "C" void setIdt(std::uint16_t size, IdtDescriptor* base);
@@ -67,19 +69,21 @@ __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::u
     panic("Double fault");
 };
 
-Cpu::Cpu(Memory::Allocator& allocator) : gdt{ 0 }, idt{ 0 }, tss{}, interruptBuffer{} {
+Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
+    gdt{ 0 }, idt{ 0 }, tss{}, interruptBuffer{}, stackTop(stackTop), stackSize(stackSize) 
+{
     setupGdt(allocator);
     setupIdt();
 }
 
 Cpu* Cpu::instance = nullptr;
 
-Cpu& Cpu::makeCpu(Memory::Allocator& allocator) {
+Cpu& Cpu::makeCpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) {
     if (Cpu::instance != nullptr) {
         panic("CPU already constructed");
     }
 
-    Cpu::instance = allocator.construct<Cpu>(allocator);
+    Cpu::instance = allocator.construct<Cpu>(allocator, stackTop, stackSize);
     if (Cpu::instance == nullptr) {
         panic("Not enough memory for CPU");
     }
@@ -95,11 +99,27 @@ void Cpu::halt() {
     asm volatile ("hlt");
 }
 
+void Cpu::growStack(std::size_t newSize, PageMapper& pageMapper) {
+    if (stackSize >= newSize) {
+        return;
+    }
+
+    auto growth = (newSize - stackSize + 4_KiB - 1) & ~(4_KiB - 1);
+    constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
+    auto result = pageMapper.allocateAndMapContiguous(stackTop - stackSize - growth, flags, growth / 4_KiB);
+    if (result != 0) {
+        panic("Cannot grow stack");
+    }
+    
+    Register::CR3::flushTLBS();
+    stackSize = growth;
+}
+
 HardwareInterrupt* Cpu::consumeInterrupts(HardwareInterrupt *dest) {
     return interruptBuffer.popAll(dest);
 }
 
-void Cpu::setupGdt(Memory::Allocator& allocator) {
+void Cpu::setupGdt(Allocator& allocator) {
     constexpr auto DataSegmentAccess = GdtAccess::CodeDataSegment
                                       | GdtAccess::Present
                                       | GdtAccess::ReadableWritable;

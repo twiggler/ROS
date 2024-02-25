@@ -1,10 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include <tuple>
 
 namespace Memory {
-
 
 constexpr std::size_t operator ""_KiB(unsigned long long int x) {
   return 1024ULL * x;
@@ -118,6 +116,12 @@ private:
     std::uint64_t entry;
 };
 
+enum class MapResult : int {
+    OK = 0,
+    OUT_OF_PHYSICAL_MEMORY = -1,
+    ALREADY_MAPPED = -2
+};
+
 class PageMapper {
 public:
     /**
@@ -130,9 +134,13 @@ public:
      */ 
     PageMapper(std::uint64_t* level4Table, std::uintptr_t offset, PageFrameAllocator& allocator);
 
-    int map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
-
+    MapResult map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
+    
     std::size_t unmap(VirtualAddress virtualAddress);
+    
+    MapResult allocateAndMap(VirtualAddress virtualAddress, PageFlags::Type flags);
+
+    MapResult allocateAndMapContiguous(VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
 
     void relocate(std::uintptr_t newOffset);
 
