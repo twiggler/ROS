@@ -1,12 +1,15 @@
 #include "cpu.hpp"
 #include "../error/error.hpp"
 #include <tuple>
+#include <utility>
 
 using namespace Memory;
 
 extern "C" void setGdt(std::uint16_t size, std::uint64_t* base, std::uint16_t codeSegment, std::uint16_t dataSegment, std::uint16_t tssSegment);
 
 extern "C" void setIdt(std::uint16_t size, IdtDescriptor* base);
+
+extern "C" void notifyEndOfInterrupt();
 
 struct GdtAccess {
     using Type = std::uint8_t;
@@ -54,7 +57,7 @@ constexpr IdtDescriptor makeGateDescriptor(std::uintptr_t isrAddress, std::uint1
     auto codesegmentSelector = codeSegmentIndex << 3;
     
     auto low = isrAddress & 0xffff;
-    low |= std::uint64_t(codeSegmentIndex) << 3 << 16;
+    low |= std::uint64_t(codesegmentSelector) << 16;
     low |= std::uint64_t(istIndex & 7) << 32;
     low |= (static_cast<std::uint64_t>(gateType) & 0xf) << 40;
     low |= std::uint64_t(1) << 47;
@@ -69,8 +72,18 @@ __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::u
     panic("Double fault");
 };
 
+template<std::uint8_t Irq>
+__attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame *frame) {
+    auto result = Cpu::getInstance().notifyHardwareInterrupt({ Irq });
+    if (!result) {
+        panic("Interrupt buffer overflow");
+    }
+
+    notifyEndOfInterrupt();
+}
+
 Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
-    gdt{ 0 }, idt{ 0 }, tss{}, interruptBuffer{}, stackTop(stackTop), stackSize(stackSize) 
+    stackTop(stackTop), stackSize(stackSize), gdt{ 0 }, idt{ 0 }, tss{}, interruptBuffer{}
 {
     setupGdt(allocator);
     setupIdt();
@@ -107,12 +120,16 @@ void Cpu::growStack(std::size_t newSize, PageMapper& pageMapper) {
     auto growth = (newSize - stackSize + 4_KiB - 1) & ~(4_KiB - 1);
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
     auto result = pageMapper.allocateAndMapContiguous(stackTop - stackSize - growth, flags, growth / 4_KiB);
-    if (result != 0) {
+    if (result != MapResult::OK) {
         panic("Cannot grow stack");
     }
     
     Register::CR3::flushTLBS();
     stackSize = growth;
+}
+
+bool Cpu::notifyHardwareInterrupt(HardwareInterrupt interrupt) {
+    return interruptBuffer.push(interrupt);
 }
 
 HardwareInterrupt* Cpu::consumeInterrupts(HardwareInterrupt *dest) {
@@ -148,8 +165,19 @@ void Cpu::setupGdt(Allocator& allocator) {
     setGdt(sizeof(gdt), gdt, KernelCodeSegmentIndex, KernelDataSegment, TssSegmentBase);
 }
 
+template<std::size_t... Is>
+void setInterruptGateDescriptors(IdtDescriptor* base, std::uint16_t codeSegmentIndex, std::int8_t istIndex, std::index_sequence<Is...>) {
+    (
+        (base[Is] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&hardwareInterruptHandler<Is>), codeSegmentIndex, GateType::Interrupt, istIndex)),
+        ...
+    );    
+}
+
 void Cpu::setupIdt() {
     idt[8] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&doubleFaultHandler), KernelCodeSegmentIndex, GateType::Trap, IstIndex);
+
+    using IndexSequence = std::make_index_sequence<16>;
+    setInterruptGateDescriptors(idt + IdtHardwareInterruptBase,  KernelCodeSegmentIndex, IstIndex, IndexSequence{});
 
     setIdt(sizeof(idt), idt);
 }

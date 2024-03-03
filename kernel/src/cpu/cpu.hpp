@@ -53,19 +53,22 @@ public:
 
     void growStack(std::size_t newSize, Memory::PageMapper& pageMapper);
 
+    bool notifyHardwareInterrupt(HardwareInterrupt interrupt);
+
     HardwareInterrupt* consumeInterrupts(HardwareInterrupt *dest);
 
 private:
     friend class Memory::Allocator;
+
     Cpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
     static Cpu* instance;
     
     void setupGdt(Memory::Allocator& allocator);
     void setupIdt();
 
-    
     static constexpr auto KernelCodeSegmentIndex = std::uint16_t(1);
     static constexpr auto IstIndex = std::uint8_t(1);
+    static constexpr auto IdtHardwareInterruptBase = std::uint8_t(32);
     
     std::uintptr_t stackTop;
     std::size_t stackSize; 

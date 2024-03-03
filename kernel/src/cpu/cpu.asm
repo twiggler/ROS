@@ -2,6 +2,7 @@ section .text
 
 global setGdt
 global setIdt
+global notifyEndOfInterrupt
 
 ; rdi:  gdt limit 
 ; rsi:  gdt base
@@ -54,4 +55,8 @@ setIdt:
 
     mov     rsp, rbp
     pop     rbp
+    ret
+
+notifyEndOfInterrupt:
+; notify PIC
     ret

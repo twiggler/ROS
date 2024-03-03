@@ -89,7 +89,7 @@ std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMem
     auto virtualAddress = higherHalf;
     for (auto physicalAddress = std::uint64_t(0); physicalAddress < physicalMemory; physicalAddress += 1_GiB) {
         auto mapResult = pageMapper.map(virtualAddress, physicalAddress, PageSize::_1GiB, flags);
-        if (mapResult != 0) {
+        if (mapResult != MapResult::OK) {
             panic("Cannot map physical memory");
         } 
         virtualAddress += 1_GiB;
@@ -113,12 +113,11 @@ std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMem
 auto makeHeap(PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
     auto result = pageMapper.allocateAndMapContiguous(heapStart, flags, heapSizeInFrames);
-    if (result != 0) {
+    if (result != MapResult::OK) {
         panic("Cannot construct kernel heap");
     }
     Register::CR3::flushTLBS();
     
-    // Problem: null_memory_resource, monotonic_buffer_resource, might throw on alloc.
     return BumpAllocator(reinterpret_cast<void*>(heapStart), heapSizeInFrames * 4_KiB);
 }
 
