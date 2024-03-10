@@ -41,6 +41,8 @@ struct HardwareInterrupt {
     std::uint8_t IRQ;
 };
 
+struct InterruptFrame;
+
 class Cpu {
 public:
     static constexpr auto InterruptBufferSize = std::size_t(256);
@@ -53,12 +55,11 @@ public:
 
     void growStack(std::size_t newSize, Memory::PageMapper& pageMapper);
 
-    bool notifyHardwareInterrupt(HardwareInterrupt interrupt);
-
     HardwareInterrupt* consumeInterrupts(HardwareInterrupt *dest);
 
 private:
     friend class Memory::Allocator;
+    template<std::uint8_t Irq> friend void hardwareInterruptHandler(InterruptFrame *frame);
 
     Cpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
     static Cpu* instance;
@@ -80,4 +81,5 @@ private:
     alignas(std::bit_ceil(sizeof(TaskStateSegment)))
     TaskStateSegment tss;
     rlib::RingBuffer<HardwareInterrupt, InterruptBufferSize> interruptBuffer;
+    std::atomic<std::size_t> spuriousIRQCount;
 };

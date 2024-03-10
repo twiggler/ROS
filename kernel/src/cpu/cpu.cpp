@@ -9,7 +9,7 @@ extern "C" void setGdt(std::uint16_t size, std::uint64_t* base, std::uint16_t co
 
 extern "C" void setIdt(std::uint16_t size, IdtDescriptor* base);
 
-extern "C" void notifyEndOfInterrupt();
+extern "C" bool notifyEndOfInterrupt(std::uint8_t IRQ);
 
 struct GdtAccess {
     using Type = std::uint8_t;
@@ -74,16 +74,26 @@ __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::u
 
 template<std::uint8_t Irq>
 __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame *frame) {
-    auto result = Cpu::getInstance().notifyHardwareInterrupt({ Irq });
+    auto& cpu = Cpu::getInstance();
+    auto result = cpu.interruptBuffer.push({ Irq });
     if (!result) {
         panic("Interrupt buffer overflow");
     }
 
-    notifyEndOfInterrupt();
+    auto spurious = notifyEndOfInterrupt(Irq);
+    if (spurious) {
+        cpu.spuriousIRQCount++;
+    }
 }
 
 Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
-    stackTop(stackTop), stackSize(stackSize), gdt{ 0 }, idt{ 0 }, tss{}, interruptBuffer{}
+    stackTop(stackTop),
+    stackSize(stackSize),
+    gdt{ 0 },
+    idt{ 0 },
+    tss{},
+    interruptBuffer{},
+    spuriousIRQCount(0)
 {
     setupGdt(allocator);
     setupIdt();
@@ -128,10 +138,6 @@ void Cpu::growStack(std::size_t newSize, PageMapper& pageMapper) {
     stackSize = growth;
 }
 
-bool Cpu::notifyHardwareInterrupt(HardwareInterrupt interrupt) {
-    return interruptBuffer.push(interrupt);
-}
-
 HardwareInterrupt* Cpu::consumeInterrupts(HardwareInterrupt *dest) {
     return interruptBuffer.popAll(dest);
 }
@@ -165,19 +171,18 @@ void Cpu::setupGdt(Allocator& allocator) {
     setGdt(sizeof(gdt), gdt, KernelCodeSegmentIndex, KernelDataSegment, TssSegmentBase);
 }
 
-template<std::size_t... Is>
-void setInterruptGateDescriptors(IdtDescriptor* base, std::uint16_t codeSegmentIndex, std::int8_t istIndex, std::index_sequence<Is...>) {
-    (
-        (base[Is] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&hardwareInterruptHandler<Is>), codeSegmentIndex, GateType::Interrupt, istIndex)),
-        ...
-    );    
-}
-
 void Cpu::setupIdt() {
     idt[8] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&doubleFaultHandler), KernelCodeSegmentIndex, GateType::Trap, IstIndex);
 
-    using IndexSequence = std::make_index_sequence<16>;
-    setInterruptGateDescriptors(idt + IdtHardwareInterruptBase,  KernelCodeSegmentIndex, IstIndex, IndexSequence{});
+    // Install 16 IRQ handlers 
+    [this]<std::size_t ...Is>(std::index_sequence<Is...>) {
+        (
+            (idt[Is + IdtHardwareInterruptBase] = 
+                makeGateDescriptor(reinterpret_cast<uintptr_t>(&hardwareInterruptHandler<Is>), KernelCodeSegmentIndex, GateType::Interrupt, IstIndex)
+            ),
+            ...
+        );  
+    }(std::make_index_sequence<16>{});
 
     setIdt(sizeof(idt), idt);
 }
