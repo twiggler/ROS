@@ -3,11 +3,16 @@ section .text
 global setGdt
 global setIdt
 global notifyEndOfInterrupt
+global initializePIC
 
 MasterPicCommandPort    equ     0x20
+MasterPicDataPort       equ     MasterPicCommandPort + 1
 SlavePicCommandPort     equ     0xa0
+SlavePicDataPort        equ     SlavePicCommandPort + 1
 PicCommandEOI           equ     0x20
+PicCommandInit          equ     0x11
 PicCommandReadISR       equ     0x0b
+ICW4_8086               equ     0x01
 
 ; rdi:  gdt limit 
 ; rsi:  gdt base
@@ -62,11 +67,44 @@ setIdt:
     pop     rbp
     ret
 
-; dl:  IRQ 
-; return: boolaean indicating if IRQ is spurious
+; dil:   Master Vector Offset
+; sil:   Slave Vector Offset
+initializePIC:
+    ; Send initialization command
+    mov     al, PicCommandInit 
+    out     MasterPicCommandPort, al
+    out     SlavePicCommandPort, al
+
+    ; Send vector offsets
+    mov     al, dil
+    out     MasterPicDataPort, al
+    mov     al, sil
+    out     SlavePicDataPort, al
+
+    ; Wire master / slave
+    mov     al, 4   
+    out     MasterPicDataPort, al   ; Slave at IRQ2
+    mov     al, 2   
+    out     SlavePicDataPort, al    ; Cascade identity of slave
+
+    ; Instruct PICs to use 8086 mode
+    mov     al, ICW4_8086
+    out     MasterPicDataPort, al
+    out     SlavePicDataPort, al
+
+    ; Set interrupt masks to keyboard only
+    mov     al, 0xf9
+    out     MasterPicDataPort, al
+    mov     al, 0xff
+    out     SlavePicDataPort, al
+
+    ret
+
+; dil:  IRQ 
+; return: boolean indicating if IRQ is spurious
 notifyEndOfInterrupt:
 ;   Check for IRQ 7 or 15, which might be spurious.   
-    mov     al, dl
+    mov     al, dil
     and     al, 7    
     cmp     al, 7
     jne     .no_spurious
@@ -85,9 +123,9 @@ notifyEndOfInterrupt:
     ret
 
 .no_spurious:
-;   If IRQ came from Slave PIC, issue an EOI (End of Interrupt) to it
+;   If IRQ came from Slave PIC, issue an EOI (End of Interrupt) to both slave and master
     mov     al, PicCommandEOI
-    cmp     dl, 8
+    cmp     dil, 8
     jl      .send_master
     out     SlavePicCommandPort, al
 .send_master:

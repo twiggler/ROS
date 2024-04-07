@@ -57,9 +57,11 @@ public:
 
     HardwareInterrupt* consumeInterrupts(HardwareInterrupt *dest);
 
+    void enableInterrupts();
+
 private:
     friend class Memory::Allocator;
-    template<std::uint8_t Irq> friend void hardwareInterruptHandler(InterruptFrame *frame);
+    friend void hardwareInterruptHandler(std::uint8_t irq);
 
     Cpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
     static Cpu* instance;

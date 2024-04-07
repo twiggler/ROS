@@ -1,13 +1,14 @@
 #include "cpu.hpp"
 #include "../error/error.hpp"
 #include <tuple>
-#include <utility>
 
 using namespace Memory;
 
 extern "C" void setGdt(std::uint16_t size, std::uint64_t* base, std::uint16_t codeSegment, std::uint16_t dataSegment, std::uint16_t tssSegment);
 
 extern "C" void setIdt(std::uint16_t size, IdtDescriptor* base);
+
+extern "C" void initializePIC(std::uint8_t masterVectorOffset, std::uint8_t slaveMasterOffset);
 
 extern "C" bool notifyEndOfInterrupt(std::uint8_t IRQ);
 
@@ -72,18 +73,22 @@ __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::u
     panic("Double fault");
 };
 
-template<std::uint8_t Irq>
-__attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame *frame) {
+void hardwareInterruptHandler(std::uint8_t irq) {
     auto& cpu = Cpu::getInstance();
-    auto result = cpu.interruptBuffer.push({ Irq });
+    auto result = cpu.interruptBuffer.push({ irq });
     if (!result) {
         panic("Interrupt buffer overflow");
     }
 
-    auto spurious = notifyEndOfInterrupt(Irq);
+    auto spurious = notifyEndOfInterrupt(irq);
     if (spurious) {
         cpu.spuriousIRQCount++;
     }
+}
+
+// template functions ignore __attribute__ interrupt
+__attribute__((interrupt)) void IRQ1Handler(InterruptFrame *frame) {
+    hardwareInterruptHandler(1);
 }
 
 Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
@@ -97,6 +102,7 @@ Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) :
 {
     setupGdt(allocator);
     setupIdt();
+    initializePIC(IdtHardwareInterruptBase, IdtHardwareInterruptBase + 8);
 }
 
 Cpu* Cpu::instance = nullptr;
@@ -142,6 +148,10 @@ HardwareInterrupt* Cpu::consumeInterrupts(HardwareInterrupt *dest) {
     return interruptBuffer.popAll(dest);
 }
 
+void Cpu::enableInterrupts() {
+    asm volatile ("sti");
+}
+
 void Cpu::setupGdt(Allocator& allocator) {
     constexpr auto DataSegmentAccess = GdtAccess::CodeDataSegment
                                       | GdtAccess::Present
@@ -173,16 +183,7 @@ void Cpu::setupGdt(Allocator& allocator) {
 
 void Cpu::setupIdt() {
     idt[8] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&doubleFaultHandler), KernelCodeSegmentIndex, GateType::Trap, IstIndex);
-
-    // Install 16 IRQ handlers 
-    [this]<std::size_t ...Is>(std::index_sequence<Is...>) {
-        (
-            (idt[Is + IdtHardwareInterruptBase] = 
-                makeGateDescriptor(reinterpret_cast<uintptr_t>(&hardwareInterruptHandler<Is>), KernelCodeSegmentIndex, GateType::Interrupt, IstIndex)
-            ),
-            ...
-        );  
-    }(std::make_index_sequence<16>{});
+    idt[IdtHardwareInterruptBase + 1] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&IRQ1Handler), KernelCodeSegmentIndex, GateType::Interrupt, IstIndex);
 
     setIdt(sizeof(idt), idt);
 }
