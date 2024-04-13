@@ -68,27 +68,24 @@ constexpr IdtDescriptor makeGateDescriptor(std::uintptr_t isrAddress, std::uint1
     return { low, high};
 }
 
-__attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::uint64_t errorCode) {
+
+ __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::uint64_t errorCode) {
     // In response to a double fault we should abort.
     panic("Double fault");
 };
 
-void hardwareInterruptHandler(std::uint8_t irq) {
+template<std::uint8_t Irq>
+__attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame*) {
     auto& cpu = Cpu::getInstance();
-    auto result = cpu.interruptBuffer.push({ irq });
+    auto result = cpu.interruptBuffer.push({ Irq });
     if (!result) {
         panic("Interrupt buffer overflow");
     }
 
-    auto spurious = notifyEndOfInterrupt(irq);
+    auto spurious = notifyEndOfInterrupt(Irq);
     if (spurious) {
         cpu.spuriousIRQCount++;
     }
-}
-
-// template functions ignore __attribute__ interrupt
-__attribute__((interrupt)) void IRQ1Handler(InterruptFrame *frame) {
-    hardwareInterruptHandler(1);
 }
 
 Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
@@ -183,7 +180,16 @@ void Cpu::setupGdt(Allocator& allocator) {
 
 void Cpu::setupIdt() {
     idt[8] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&doubleFaultHandler), KernelCodeSegmentIndex, GateType::Trap, IstIndex);
-    idt[IdtHardwareInterruptBase + 1] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&IRQ1Handler), KernelCodeSegmentIndex, GateType::Interrupt, IstIndex);
+    
+    // Install 16 IRQ handlers 
+    [this]<std::size_t ...Is>(std::index_sequence<Is...>) {
+        (
+            (idt[Is + IdtHardwareInterruptBase] = 
+                makeGateDescriptor(reinterpret_cast<uintptr_t>(&hardwareInterruptHandler<Is>), KernelCodeSegmentIndex, GateType::Interrupt, IstIndex)
+            ),
+            ...
+        );  
+    }(std::make_index_sequence<16>{});
 
     setIdt(sizeof(idt), idt);
 }

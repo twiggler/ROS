@@ -61,7 +61,9 @@ public:
 
 private:
     friend class Memory::Allocator;
-    friend void hardwareInterruptHandler(std::uint8_t irq);
+    
+    template<std::uint8_t Irq> friend 
+    __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame *frame);
 
     Cpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
     static Cpu* instance;
