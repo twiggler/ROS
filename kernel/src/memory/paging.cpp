@@ -40,6 +40,7 @@ void PageFrameAllocator::dealloc(void *ptr) {
 }
 
 void PageFrameAllocator::relocate(std::uintptr_t newOffset) {
+    // Probably UB
     auto newBase = reinterpret_cast<std::uintptr_t>(base) + newOffset;
     top = reinterpret_cast<std::uintptr_t*>(newBase) + (top - base); 
     base = reinterpret_cast<std::uintptr_t*>(newBase);
@@ -223,6 +224,7 @@ MapResult PageMapper::allocateAndMapContiguous(VirtualAddress virtualAddress, Pa
 void PageMapper::relocate(std::uintptr_t newOffset) {
     frameAllocator->relocate(newOffset);
     offset = newOffset;
+    // Probably UB
     auto relocatedTableLevel4 = reinterpret_cast<std::uintptr_t>(tableLevel4) + newOffset;
     tableLevel4 = reinterpret_cast<std::uintptr_t *>(relocatedTableLevel4);
 }

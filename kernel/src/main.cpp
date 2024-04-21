@@ -1,3 +1,4 @@
+#include "abi/icxxabi.h"
 #include <cstdint>
 #include <bootboot.h>
 #include <ranges>
@@ -5,7 +6,7 @@
 #include <numeric>
 #include <utility>
 #include "memory/paging.hpp"
-#include "memory/allocator.hpp"
+#include <allocator.hpp>
 #include "cpu/cpu.hpp"
 #include "error/error.hpp"
 #include "kernel.hpp"
@@ -118,7 +119,7 @@ auto makeHeap(PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heap
     }
     Register::CR3::flushTLBS();
     
-    return BumpAllocator(reinterpret_cast<void*>(heapStart), heapSizeInFrames * 4_KiB);
+    return rlib::BumpAllocator(reinterpret_cast<void*>(heapStart), heapSizeInFrames * 4_KiB);
 }
 
 Kernel makeKernel() {

@@ -1,7 +1,7 @@
 #include "allocator.hpp"
 #include <memory>
 
-namespace Memory { 
+namespace rlib { 
 
 void *Allocator::allocate(std::size_t bytes, std::size_t alignment) {
     return do_allocate(bytes, alignment);

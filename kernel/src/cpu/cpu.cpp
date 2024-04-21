@@ -88,7 +88,7 @@ __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame*) {
     }
 }
 
-Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
+Cpu::Cpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
     stackTop(stackTop),
     stackSize(stackSize),
     gdt{ 0 },
@@ -102,14 +102,14 @@ Cpu::Cpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) :
     initializePIC(IdtHardwareInterruptBase, IdtHardwareInterruptBase + 8);
 }
 
-Cpu* Cpu::instance = nullptr;
+rlib::OwningPointer<Cpu> Cpu::instance{};
 
-Cpu& Cpu::makeCpu(Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) {
+Cpu& Cpu::makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) {
     if (Cpu::instance != nullptr) {
         panic("CPU already constructed");
     }
 
-    Cpu::instance = allocator.construct<Cpu>(allocator, stackTop, stackSize);
+    Cpu::instance = rlib::construct<Cpu>(allocator, allocator, stackTop, stackSize);
     if (Cpu::instance == nullptr) {
         panic("Not enough memory for CPU");
     }
@@ -149,7 +149,7 @@ void Cpu::enableInterrupts() {
     asm volatile ("sti");
 }
 
-void Cpu::setupGdt(Allocator& allocator) {
+void Cpu::setupGdt(rlib::Allocator& allocator) {
     constexpr auto DataSegmentAccess = GdtAccess::CodeDataSegment
                                       | GdtAccess::Present
                                       | GdtAccess::ReadableWritable;

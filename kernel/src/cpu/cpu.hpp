@@ -1,9 +1,10 @@
 #pragma once
 #include <cstdint>
 #include "../memory/paging.hpp"
-#include "../memory/allocator.hpp"
+#include <allocator.hpp>
 #include <ringbuffer.hpp>
 #include <bit>
+#include <pointer.hpp>
 
 namespace Register {
 
@@ -45,9 +46,11 @@ struct InterruptFrame;
 
 class Cpu {
 public:
+    Cpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
+
     static constexpr auto InterruptBufferSize = std::size_t(256);
     
-    static Cpu& makeCpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
+    static Cpu& makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
 
     static Cpu& getInstance();
 
@@ -60,15 +63,12 @@ public:
     void enableInterrupts();
 
 private:
-    friend class Memory::Allocator;
-    
     template<std::uint8_t Irq> friend 
     __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame *frame);
-
-    Cpu(Memory::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
-    static Cpu* instance;
+   
+    static rlib::OwningPointer<Cpu> instance;
     
-    void setupGdt(Memory::Allocator& allocator);
+    void setupGdt(rlib::Allocator& allocator);
     void setupIdt();
 
     static constexpr auto KernelCodeSegmentIndex = std::uint16_t(1);

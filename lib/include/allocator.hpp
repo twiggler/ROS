@@ -4,16 +4,13 @@
 #include <utility>
 
 
-namespace Memory {
-    
+namespace rlib {
     // No-throw interface for allocators.
     class Allocator {
     public:
         [[nodiscard]] void* allocate(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t));
 
         void deallocate(void *p, std::size_t bytes, std::size_t = alignof(std::max_align_t));
-
-        template<class U, class... Args> U* construct(Args&&... args);
 
     private:
         virtual void* do_allocate(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t)) = 0;
@@ -37,12 +34,6 @@ namespace Memory {
         virtual void do_deallocate(void* p, std::size_t bytes, std::size_t alignment ) final;
     };
 
-    template<class U, class... Args> U* Allocator::construct(Args&&... args) {
-        auto p = allocate(sizeof(U), alignof(U));
-        if (p == nullptr) {
-            return nullptr;
-        }
-
-        return ::new(p) U(std::forward<Args>(args)...);
-    }
+    template <typename T>
+    concept DerivedFromAllocator = std::is_base_of_v<Allocator, T>;
 }
