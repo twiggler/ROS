@@ -1,4 +1,5 @@
 #include "paging.hpp"
+#include <memory>
 
 namespace Memory {
 
@@ -9,17 +10,26 @@ Block Block::align(std::size_t alignment) const {
     return { alignedStartAddress, alignedSize <= size ? alignedSize : 0 };
 }
 
+Block Block::take(std::size_t amount) const { 
+    return amount <= size ? Block{startAddress + amount, size - amount} : Block{0, 0};
+}
+
 Block Block::resize(std::size_t newSize) const { 
     return Block{startAddress, newSize };
 }
 
-std::size_t PageFrameAllocator::requiredStorage(std::size_t numberOfFrames) {
-    return numberOfFrames * sizeof(std::uintptr_t);
+std::optional<PageFrameAllocator> PageFrameAllocator::make(rlib::Allocator& allocator, std::size_t physicalMemory, std::size_t frameSize) {
+    auto base = rlib::construct<std::uintptr_t[]>(allocator, physicalMemory / frameSize);
+    if (base == nullptr) {
+        return {};
+    }
+    
+    return PageFrameAllocator(nullptr, physicalMemory, frameSize);
 }
 
-PageFrameAllocator::PageFrameAllocator(Block storage, std::size_t physicalMemory, std::size_t frameSize) :
-    base(reinterpret_cast<uintptr_t*>(storage.startAddress)),
-    top(base),
+PageFrameAllocator::PageFrameAllocator(rlib::OwningPointer<std::uintptr_t[]> base, std::size_t physicalMemory, std::size_t frameSize) :
+    base(std::move(base)),
+    top(base.get()),
     _physicalMemory(physicalMemory),
     frameSize(frameSize) {}
 
@@ -28,7 +38,7 @@ std::size_t PageFrameAllocator::physicalMemory() const {
 }
 
 Block PageFrameAllocator::alloc() { 
-    if (top == base) {
+    if (top == base.get()) {
         return { 0, 0 }; 
     }
 
@@ -38,13 +48,6 @@ Block PageFrameAllocator::alloc() {
 void PageFrameAllocator::dealloc(void *ptr) {
     *(top++) = reinterpret_cast<std::uintptr_t>(ptr);
 }
-
-void PageFrameAllocator::relocate(std::uintptr_t newOffset) {
-    // Probably UB
-    auto newBase = reinterpret_cast<std::uintptr_t>(base) + newOffset;
-    top = reinterpret_cast<std::uintptr_t*>(newBase) + (top - base); 
-    base = reinterpret_cast<std::uintptr_t*>(newBase);
-}    
 
 VirtualAddress::VirtualAddress(std::uintptr_t address) :
     address(address) {}
@@ -104,10 +107,15 @@ constexpr std::uint64_t PageTableEntry::encodedPhysicalAddress(std::uint64_t add
     return address & std::uint64_t(0xF'FFFF'FFFF'F000); 
 }
 
-
-
-PageMapper::PageMapper(std::uint64_t *level4Table, std::uintptr_t offset, PageFrameAllocator& allocator) :
-    tableLevel4(level4Table), offset(offset), frameAllocator(&allocator) {}
+PageMapper::PageMapper(std::uint64_t *level4Table, std::uintptr_t offset, PageFrameAllocator allocator) :
+    tableLevel4(level4Table), offset(offset), frameAllocator(std::move(allocator)) 
+{
+    // Any new page tables have their lifetime implicitly started. 
+    // We need to explicitly start the lifetime of any existing page tables.
+    // However, "std::start_lifetime_as" is not implemented yet in gcc.
+    // Technically, reading and writing to page entries is UB.
+    
+}   
 
 MapResult PageMapper::map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
     auto indexLevel4 = virtualAddress.indexLevel4();
@@ -202,7 +210,7 @@ std::size_t PageMapper::unmap(VirtualAddress virtualAddress) {
 }
 
 MapResult PageMapper::allocateAndMap(VirtualAddress virtualAddress, PageFlags::Type flags) {
-    auto block = frameAllocator->alloc();
+    auto block = frameAllocator.alloc();
     if (block.size == 0) {
         return MapResult::OUT_OF_PHYSICAL_MEMORY;
     }
@@ -222,11 +230,12 @@ MapResult PageMapper::allocateAndMapContiguous(VirtualAddress virtualAddress, Pa
 }
 
 void PageMapper::relocate(std::uintptr_t newOffset) {
-    frameAllocator->relocate(newOffset);
     offset = newOffset;
-    // Probably UB
     auto relocatedTableLevel4 = reinterpret_cast<std::uintptr_t>(tableLevel4) + newOffset;
     tableLevel4 = reinterpret_cast<std::uintptr_t *>(relocatedTableLevel4);
+    
+    // We need to explicitly start the lifetime of any existing page tables.
+    // However, "std::start_lifetime_as" is not implemented yet in gcc.
 }
 
 std::uint64_t *PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) { 
@@ -236,20 +245,21 @@ std::uint64_t *PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) {
         return reinterpret_cast<std::uint64_t*>(offset + entry.physicalAddress());
     } 
 
-    auto newTableBlock = frameAllocator->alloc();
+    auto newTableBlock = frameAllocator.alloc();
     if (newTableBlock.size == 0) {
         return nullptr;
     }
-    auto tablePtr = reinterpret_cast<std::uint64_t*>(offset + newTableBlock.startAddress);
+    auto tableStorage = reinterpret_cast<void*>(offset + newTableBlock.startAddress);
+    auto table = new (tableStorage) (std::uint64_t[512]);
     for (auto i = 0; i < 512; i++) {
-        tablePtr[i] = PageTableEntry::empty(); 
+        table[i] = PageTableEntry::empty(); 
     }    
 
     rawParentEntry = PageTableEntry()
         .setPhysicalAddress(newTableBlock.startAddress)
         .setFlags(PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible);
 
-    return tablePtr;
+    return table;
 }
 
 } // namespace Memory

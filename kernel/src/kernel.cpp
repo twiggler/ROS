@@ -3,8 +3,8 @@
 
 using namespace Memory;
 
-Kernel::Kernel(PageMapper& pageMapper, Cpu& cpu) :
-    pageMapper(&pageMapper),
+Kernel::Kernel(PageMapper pageMapper, Cpu& cpu) :
+    pageMapper(std::move(pageMapper)),
     cpu(&cpu)
 {
     cpu.growStack(64_KiB, pageMapper);

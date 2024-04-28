@@ -4,12 +4,12 @@
 
 class Kernel {
 public:
-    Kernel(Memory::PageMapper& pageMapper, Cpu& cpu);
+    Kernel(Memory::PageMapper pageMapper, Cpu& cpu);
 
     void run();    
 
 private:
-    Memory::PageMapper*         pageMapper;
-    Cpu*                        cpu;  
+    Memory::PageMapper        pageMapper;
+    Cpu*                      cpu;  
 };
 

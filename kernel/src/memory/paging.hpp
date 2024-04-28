@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <allocator.hpp>
+#include <pointer.hpp>
+#include <optional>
 
 namespace Memory {
 
@@ -31,24 +34,24 @@ struct Block {
      */ 
     Block align(std::size_t alignment) const;
 
+    Block take(std::size_t amount) const;
+
     Block resize(std::size_t newSize) const;
 };
 
 class PageFrameAllocator {
 public:
-    static std::size_t requiredStorage(std::size_t numberOfFrames); 
+    static std::optional<PageFrameAllocator> make(rlib::Allocator& allocator, std::size_t physicalMemory, std::size_t frameSize);
 
-    PageFrameAllocator(Block storage, std::size_t physicalMemory, std::size_t frameSize);
+    PageFrameAllocator(rlib::OwningPointer<std::uintptr_t[]> base, std::size_t physicalMemory, std::size_t frameSize);
 
     std::size_t physicalMemory() const;
 
     Block alloc();
 
     void dealloc(void* ptr);
-
-    void relocate(std::uintptr_t newOffset);
 private:
-    std::uintptr_t* base;
+    rlib::OwningPointer<std::uintptr_t[]> base;
     std::uintptr_t* top;
     std::size_t _physicalMemory;
     std::size_t frameSize;
@@ -132,7 +135,7 @@ public:
      * @param level4 Pointer to level 4 paging table. 
      * @param offset Virtual address where mapping of physical memory starts.
      */ 
-    PageMapper(std::uint64_t* level4Table, std::uintptr_t offset, PageFrameAllocator& allocator);
+    PageMapper(std::uint64_t* level4Table, std::uintptr_t offset, PageFrameAllocator allocator);
 
     MapResult map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
     
@@ -149,7 +152,7 @@ private:
 
     std::uint64_t* tableLevel4;
     std::uintptr_t offset;
-    PageFrameAllocator* frameAllocator;
+    PageFrameAllocator frameAllocator;
 };
 
 }
