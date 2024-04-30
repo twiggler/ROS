@@ -39,10 +39,7 @@ class OneShotAllocator : public rlib::Allocator {
         return memoryMap
             | std::views::filter([](auto entry) { return MMapEnt_IsFree(&entry); })
             | std::views::transform([](auto entry) { return Block{entry.ptr, MMapEnt_Size(&entry) }; })
-            | std::views::transform([](auto block) { 
-                // Prevent allocation at physical address 0x0, which is identity mapped to virtual address 0x0 
-                return block.startAddress == 0 ? block.take(frameSize).align(frameSize) : block.align(frameSize);
-            });
+            | std::views::transform([](auto block) { return block.align(frameSize); });
             // TODO: restrict to first 16GB
     }
 public:
@@ -63,16 +60,19 @@ public:
 private:
     virtual void* do_allocate(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t)) {
         auto availableBlocks = availableBlockView();
-        auto storageBlock = std::ranges::find_if(availableBlocks, [=](auto block) { return block.size >= bytes; });
+        auto storageBlock = std::ranges::find_if(availableBlocks, [=](auto block) { return block.size >= bytes + alignment; });
         if (storageBlock == availableBlocks.end()) {
             return nullptr;
         }
-        allocatedBlock = (*storageBlock).resize(bytes);
+        allocatedBlock = (*storageBlock).resize(bytes + alignment);
 
-        return reinterpret_cast<void*>(allocatedBlock.startAddress);
+        // Prevent allocation at physical address 0x0, which is identity mapped to virtual address 0x0 
+        return reinterpret_cast<void*>(allocatedBlock.startAddress + alignment);
     }
 
-    virtual void do_deallocate( void* p, std::size_t bytes, std::size_t alignment ) { }
+    virtual void do_deallocate( void* p, std::size_t bytes, std::size_t alignment ) { 
+        // NOOP        
+    }
 
     std::span<const MMapEnt> memoryMap;
     Block allocatedBlock;
@@ -105,7 +105,7 @@ PageFrameAllocator makePageFrameAllocator() {
     return std::move(*pageFrameAllocator);
 }
 
-std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMemory) {
+std::uintptr_t patchMemoryLayout(std::uint64_t* tableLevel4, PageMapper& pageMapper, std::size_t physicalMemory) {
     // Map all physical memory to start of higher half virtual address space. 
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
     
@@ -115,7 +115,7 @@ std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMem
     constexpr auto higherHalf = std::uintptr_t(0xffff'8000'0000'0000);
     auto virtualAddress = higherHalf;
     for (auto physicalAddress = std::uint64_t(0); physicalAddress < physicalMemory; physicalAddress += 1_GiB) {
-        auto mapResult = pageMapper.map(virtualAddress, physicalAddress, PageSize::_1GiB, flags);
+        auto mapResult = pageMapper.map(tableLevel4, virtualAddress, physicalAddress, PageSize::_1GiB, flags);
         if (mapResult != MapResult::OK) {
             panic("Cannot map physical memory");
         } 
@@ -127,9 +127,9 @@ std::uintptr_t patchMemoryLayout(PageMapper& pageMapper, std::size_t physicalMem
     return virtualAddress;
 }
 
-auto makeHeap(PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
+auto makeHeap(std::uint64_t* tableLevel4, PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
-    auto result = pageMapper.allocateAndMapContiguous(heapStart, flags, heapSizeInFrames);
+    auto result = pageMapper.allocateAndMapContiguous(tableLevel4, heapStart, flags, heapSizeInFrames);
     if (result != MapResult::OK) {
         panic("Cannot construct kernel heap");
     }
@@ -142,15 +142,15 @@ Kernel makeKernel() {
     auto frameAllocator = makePageFrameAllocator();
     auto physicalMemory = frameAllocator.physicalMemory();
 
-    auto level4Table = reinterpret_cast<std::uint64_t*>(Register::CR3::read());
-    auto pageMapper = PageMapper(level4Table, 0 /* Bootboot identity maps first 16GB */, std::move(frameAllocator));
+    auto tableLevel4 = reinterpret_cast<std::uint64_t*>(Register::CR3::read());
+    auto pageMapper = PageMapper(0 /* Bootboot identity maps first 16GB */, std::move(frameAllocator));
 
-    auto heapStart = patchMemoryLayout(pageMapper, physicalMemory);
-    auto allocator = makeHeap(pageMapper, heapStart, 4);
+    auto heapStart = patchMemoryLayout(tableLevel4, pageMapper, physicalMemory);
+    auto allocator = makeHeap(tableLevel4, pageMapper, heapStart, 4);
     
     auto& cpu = Cpu::makeCpu(allocator, 0xffffffff'ffffffff, 4_KiB);
     
-    return Kernel(std::move(pageMapper), cpu);
+    return Kernel(tableLevel4, std::move(pageMapper), cpu);
 }
 
 int main()

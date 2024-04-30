@@ -4,7 +4,7 @@
 
 class Kernel {
 public:
-    Kernel(Memory::PageMapper pageMapper, Cpu& cpu);
+    Kernel(std::uint64_t* tableLevel4, Memory::PageMapper pageMapper, Cpu& cpu);
 
     void run();    
 

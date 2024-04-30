@@ -125,14 +125,14 @@ void Cpu::halt() {
     asm volatile ("hlt");
 }
 
-void Cpu::growStack(std::size_t newSize, PageMapper& pageMapper) {
+void Cpu::growStack(std::uint64_t* tableLevel4, std::size_t newSize, PageMapper& pageMapper) {
     if (stackSize >= newSize) {
         return;
     }
 
     auto growth = (newSize - stackSize + 4_KiB - 1) & ~(4_KiB - 1);
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
-    auto result = pageMapper.allocateAndMapContiguous(stackTop - stackSize - growth, flags, growth / 4_KiB);
+    auto result = pageMapper.allocateAndMapContiguous(tableLevel4, stackTop - stackSize - growth, flags, growth / 4_KiB);
     if (result != MapResult::OK) {
         panic("Cannot grow stack");
     }

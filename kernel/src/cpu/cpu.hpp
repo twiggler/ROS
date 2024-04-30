@@ -56,7 +56,7 @@ public:
 
     static void halt();
 
-    void growStack(std::size_t newSize, Memory::PageMapper& pageMapper);
+    void growStack(std::uint64_t* tableLevel4, std::size_t newSize, Memory::PageMapper& pageMapper);
 
     HardwareInterrupt* consumeInterrupts(HardwareInterrupt *dest);
 

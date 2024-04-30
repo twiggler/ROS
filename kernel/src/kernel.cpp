@@ -3,11 +3,11 @@
 
 using namespace Memory;
 
-Kernel::Kernel(PageMapper pageMapper, Cpu& cpu) :
+Kernel::Kernel(std::uint64_t* tableLevel4, PageMapper pageMapper, Cpu& cpu) :
     pageMapper(std::move(pageMapper)),
     cpu(&cpu)
 {
-    cpu.growStack(64_KiB, pageMapper);
+    cpu.growStack(tableLevel4, 64_KiB, pageMapper);
 }
 
 void Kernel::run() {

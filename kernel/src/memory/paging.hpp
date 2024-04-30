@@ -132,25 +132,24 @@ public:
      * 
      * Assume that physically memory is mapped at some offset in the virtual address space.
      * 
-     * @param level4 Pointer to level 4 paging table. 
      * @param offset Virtual address where mapping of physical memory starts.
+     * @param frameAllocator Page frame allocator
      */ 
-    PageMapper(std::uint64_t* level4Table, std::uintptr_t offset, PageFrameAllocator allocator);
+    PageMapper(std::uintptr_t offset, PageFrameAllocator frameAllocator);
 
-    MapResult map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
+    MapResult map(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
     
-    std::size_t unmap(VirtualAddress virtualAddress);
+    std::size_t unmap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress);
     
-    MapResult allocateAndMap(VirtualAddress virtualAddress, PageFlags::Type flags);
+    MapResult allocateAndMap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags);
 
-    MapResult allocateAndMapContiguous(VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
+    MapResult allocateAndMapContiguous(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
 
     void relocate(std::uintptr_t newOffset);
 
 private:
     std::uint64_t* ensurePageTable(std::uint64_t&);
 
-    std::uint64_t* tableLevel4;
     std::uintptr_t offset;
     PageFrameAllocator frameAllocator;
 };

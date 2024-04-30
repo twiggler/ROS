@@ -107,17 +107,14 @@ constexpr std::uint64_t PageTableEntry::encodedPhysicalAddress(std::uint64_t add
     return address & std::uint64_t(0xF'FFFF'FFFF'F000); 
 }
 
-PageMapper::PageMapper(std::uint64_t *level4Table, std::uintptr_t offset, PageFrameAllocator allocator) :
-    tableLevel4(level4Table), offset(offset), frameAllocator(std::move(allocator)) 
-{
-    // Any new page tables have their lifetime implicitly started. 
-    // We need to explicitly start the lifetime of any existing page tables.
-    // However, "std::start_lifetime_as" is not implemented yet in gcc.
-    // Technically, reading and writing to page entries is UB.
-    
-}   
+// Any new page tables have their lifetime implicitly started. 
+// We need to explicitly start the lifetime of any existing page tables.
+// However, "std::start_lifetime_as" is not implemented yet in gcc.
+// Technically, reading and writing to page entries is UB.
+PageMapper::PageMapper(std::uintptr_t offset, PageFrameAllocator allocator) :
+    offset(offset), frameAllocator(std::move(allocator)) {}
 
-MapResult PageMapper::map(VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
+MapResult PageMapper::map(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
     auto indexLevel4 = virtualAddress.indexLevel4();
     auto tableLevel3 = ensurePageTable(tableLevel4[indexLevel4]); 
     if (tableLevel3 == nullptr) {
@@ -169,7 +166,7 @@ MapResult PageMapper::map(VirtualAddress virtualAddress, std::uint64_t physicalA
     return MapResult::OK;
 }
 
-std::size_t PageMapper::unmap(VirtualAddress virtualAddress) {
+std::size_t PageMapper::unmap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress) {
     auto indexLevel4 = virtualAddress.indexLevel4();
     auto entryLevel4 = PageTableEntry(tableLevel4[indexLevel4]);
     if (!entryLevel4.isUsed()) {
@@ -209,18 +206,18 @@ std::size_t PageMapper::unmap(VirtualAddress virtualAddress) {
     return 4_KiB;
 }
 
-MapResult PageMapper::allocateAndMap(VirtualAddress virtualAddress, PageFlags::Type flags) {
+MapResult PageMapper::allocateAndMap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags) {
     auto block = frameAllocator.alloc();
     if (block.size == 0) {
         return MapResult::OUT_OF_PHYSICAL_MEMORY;
     }
 
-    return map(virtualAddress, block.startAddress, PageSize::_4KiB, flags);
+    return map(tableLevel4, virtualAddress, block.startAddress, PageSize::_4KiB, flags);
 }
 
-MapResult PageMapper::allocateAndMapContiguous(VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
+MapResult PageMapper::allocateAndMapContiguous(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
     for (auto i = std::size_t(0); i < nFrames; i++) {
-        auto result = allocateAndMap(virtualAddress + i * 4_KiB, flags);
+        auto result = allocateAndMap(tableLevel4, virtualAddress + i * 4_KiB, flags);
         if (result != MapResult::OK) {
             return result;
         }
@@ -231,11 +228,6 @@ MapResult PageMapper::allocateAndMapContiguous(VirtualAddress virtualAddress, Pa
 
 void PageMapper::relocate(std::uintptr_t newOffset) {
     offset = newOffset;
-    auto relocatedTableLevel4 = reinterpret_cast<std::uintptr_t>(tableLevel4) + newOffset;
-    tableLevel4 = reinterpret_cast<std::uintptr_t *>(relocatedTableLevel4);
-    
-    // We need to explicitly start the lifetime of any existing page tables.
-    // However, "std::start_lifetime_as" is not implemented yet in gcc.
 }
 
 std::uint64_t *PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) { 
