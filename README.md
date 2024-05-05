@@ -12,5 +12,4 @@ Roel Operating System.
 
 Debug using QEMU:
 
-- enter kernel directory
-- `make && ./debug.sh`
+qemu-system-x86_64 -s -S -bios /usr/share/qemu/OVMF.fd -drive format=raw,file=fat:rw:initrd/build

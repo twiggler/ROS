@@ -6,6 +6,7 @@ SRC_DIR := src
 OBJ_DIR := build
 SRC_FILES := $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(SRC_DIR)/*/*.cpp)
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRC_FILES))
+DEPS := deps.d
 
 $(OBJ_DIR)/kernel.x86_64.elf: $(OBJ_FILES) ${OBJ_DIR}/cpu_asm.o $(OBJ_DIR)/font.o
 	ld $(LDFLAGS) -o $@ $^ ${LDLIBS}
@@ -13,10 +14,12 @@ $(OBJ_DIR)/kernel.x86_64.elf: $(OBJ_FILES) ${OBJ_DIR}/cpu_asm.o $(OBJ_DIR)/font.
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(@D)
-	g++ $(CPPFLAGS) -MMD -MP -c -o $@ $<
+	g++ $(CPPFLAGS) -MMD -MP -MF $(DEPS) -c -o $@ $<
 
 $(OBJ_DIR)/cpu_asm.o: $(SRC_DIR)/cpu/cpu.asm
 	nasm -f elf64 -o $@ $< 
 
 $(OBJ_DIR)/font.o: font/font.psf
 	ld -r -z noexecstack -b binary -o $@ $<
+
+-include ${DEPS}

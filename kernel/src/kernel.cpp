@@ -1,13 +1,19 @@
 #include "kernel.hpp"
 #include "error/error.hpp"
+#include <ustar.hpp>
 
 using namespace Memory;
+using namespace rlib;
 
-Kernel::Kernel(std::uint64_t* tableLevel4, PageMapper pageMapper, Cpu& cpu) :
+Kernel::Kernel(std::uint64_t* tableLevel4, PageMapper pageMapper, Cpu& cpu, InputStream<rlib::MemorySource> initrd) :
     pageMapper(std::move(pageMapper)),
     cpu(&cpu)
 {
     cpu.growStack(tableLevel4, 64_KiB, pageMapper);
+    auto [archive, result] = UStar::lookup(initrd, "kernel.x86_64.elf"_sv);
+    if (result.result != UStar::LookupResult::Code::OK) {
+        panic("Cannot find kernel");
+    }
 }
 
 void Kernel::run() {

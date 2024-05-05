@@ -1,5 +1,6 @@
 #include "abi/icxxabi.h"
 #include <cstdint>
+#include <stream.hpp>
 #include <bootboot.h>
 #include <ranges>
 #include <cstddef>
@@ -149,8 +150,11 @@ Kernel makeKernel() {
     auto allocator = makeHeap(tableLevel4, pageMapper, heapStart, 4);
     
     auto& cpu = Cpu::makeCpu(allocator, 0xffffffff'ffffffff, 4_KiB);
+
+    auto memorySource = rlib::MemorySource(reinterpret_cast<std::byte*>(bootboot.initrd_ptr), bootboot.initrd_size);
+    auto inputStream = rlib::InputStream(std::move(memorySource));
     
-    return Kernel(tableLevel4, std::move(pageMapper), cpu);
+    return Kernel(tableLevel4, std::move(pageMapper), cpu, std::move(inputStream));
 }
 
 int main()

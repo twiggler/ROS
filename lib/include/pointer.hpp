@@ -52,6 +52,8 @@ namespace rlib {
     template<class U, DerivedFromAllocator Alloc = Allocator, class... Args>
     OwningPointer<U, Alloc> construct(Alloc& alloc, std::size_t size) requires std::is_array_v<U>;
 
+/* IMPLEMENTATION */
+
     template<class T, DerivedFromAllocator Alloc>
     OwningPointer<T, Alloc>::OwningPointer() :
         pointer(nullptr), alloc(nullptr) {}
