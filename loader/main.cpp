@@ -1,16 +1,16 @@
-#include "abi/icxxabi.h"
+#include <libr/icxxabi.hpp>
 #include <cstdint>
-#include <stream.hpp>
+#include <libr/stream.hpp>
 #include <bootboot.h>
 #include <ranges>
 #include <cstddef>
 #include <numeric>
 #include <utility>
-#include "memory/paging.hpp"
-#include <allocator.hpp>
-#include "cpu/cpu.hpp"
-#include "error/error.hpp"
-#include "kernel.hpp"
+#include <kernel/kernel.hpp>
+#include <kernel/paging.hpp>
+#include <libr/allocator.hpp>
+#include <kernel/cpu.hpp>
+#include <kernel/error.hpp>
 #include <concepts>
 
 // BOOTBOOT imported virtual addresses, see see linker script

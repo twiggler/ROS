@@ -1,5 +1,5 @@
-#include "cpu.hpp"
-#include "../error/error.hpp"
+#include <kernel/cpu.hpp>
+#include <kernel/error.hpp>
 #include <tuple>
 
 using namespace Memory;

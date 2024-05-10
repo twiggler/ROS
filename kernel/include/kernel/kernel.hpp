@@ -1,8 +1,8 @@
 #pragma once
-#include "memory/paging.hpp"
-#include <stream.hpp>
-#include "cpu/cpu.hpp"
-#include <string>
+
+#include "paging.hpp"
+#include <libr/stream.hpp>
+#include "cpu.hpp"
 
 class Kernel {
 public:

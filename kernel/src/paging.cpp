@@ -1,4 +1,4 @@
-#include "paging.hpp"
+#include "kernel/paging.hpp"
 #include <memory>
 
 namespace Memory {

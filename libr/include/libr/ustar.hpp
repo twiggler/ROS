@@ -18,6 +18,10 @@ struct LookupResult {
         STREAM_ERROR = -3
     } result;
     StreamResult streamError;
+
+    operator Code() const {
+        return result;
+    } 
 };
 
 template<class Source, CharRange R>

@@ -1,10 +1,11 @@
 #pragma once
+
 #include <cstdint>
-#include "../memory/paging.hpp"
-#include <allocator.hpp>
-#include <ringbuffer.hpp>
+#include "paging.hpp"
+#include <libr/allocator.hpp>
+#include <libr/ringbuffer.hpp>
 #include <bit>
-#include <pointer.hpp>
+#include <libr/pointer.hpp>
 
 namespace Register {
 

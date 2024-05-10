@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include <allocator.hpp>
-#include <pointer.hpp>
+#include <libr/allocator.hpp>
+#include <libr/pointer.hpp>
 #include <optional>
 
 namespace Memory {

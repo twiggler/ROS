@@ -12,4 +12,4 @@ Roel Operating System.
 
 Debug using QEMU:
 
-qemu-system-x86_64 -s -S -bios /usr/share/qemu/OVMF.fd -drive format=raw,file=fat:rw:initrd/build
+qemu-system-x86_64 -s -S -bios /usr/share/qemu/OVMF.fd -drive format=raw,file=fat:rw:loader/build/initrd

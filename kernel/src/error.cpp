@@ -1,4 +1,4 @@
-#include "error.hpp"
+#include <kernel/error.hpp>
 
 static FrameBufferInfo fb;
 
