@@ -60,13 +60,13 @@ private:
 struct PageFlags {
     using Type = std::uint64_t;
 
-    static constexpr Type Present = Type(1);
-    static constexpr Type Writable = Type(1) << 1;
-    static constexpr Type UserAccessible = Type(1) << 2;
-    static constexpr Type HugePage = Type(1) << 7;
-    static constexpr Type Global = Type(1) << 8;
-    static constexpr Type NoExecute = Type(1) << 63;
-    static constexpr Type All = Present | Writable | UserAccessible | HugePage | Global | NoExecute;
+    static constexpr auto Present = Type(1);
+    static constexpr auto Writable = Type(1) << 1;
+    static constexpr auto UserAccessible = Type(1) << 2;
+    static constexpr auto HugePage = Type(1) << 7;
+    static constexpr auto Global = Type(1) << 8;
+    static constexpr auto NoExecute = Type(1) << 63;
+    static constexpr auto All = Present | Writable | UserAccessible | HugePage | Global | NoExecute;
 };
 
 enum struct PageSize : std::uint8_t {

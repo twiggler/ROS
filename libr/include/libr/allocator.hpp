@@ -4,7 +4,7 @@
 #include <utility>
 
 
-namespace rlib {
+namespace rlib {    
     // No-throw interface for allocators.
     class Allocator {
     public:
@@ -21,6 +21,8 @@ namespace rlib {
     class BumpAllocator : public Allocator {
     public:
         BumpAllocator(void* buffer, std::size_t size);
+        
+        BumpAllocator(BumpAllocator&& other);
 
         BumpAllocator(const BumpAllocator&) = delete;
         BumpAllocator& operator= (const BumpAllocator&) = delete;
@@ -35,5 +37,5 @@ namespace rlib {
     };
 
     template <typename T>
-    concept DerivedFromAllocator = std::is_base_of_v<Allocator, T>;
+    concept IsAllocator = std::is_base_of_v<Allocator, T>;
 }

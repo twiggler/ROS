@@ -14,6 +14,11 @@ enum class StreamResult : int {
     END_OF_STREAM = -1
 };
 
+template <typename Source>
+concept IsSlicable = requires(Source source, std::size_t start, std::size_t size) {
+    { source.slice(start, size) } -> std::same_as<Source>;
+};
+
 class MemorySource {
 public:
     MemorySource(std::byte* start, std::size_t size);
@@ -24,14 +29,17 @@ public:
 
     StreamResult read(std::size_t size, std::byte* dest);
 
+    MemorySource slice(std::size_t start, std::size_t size) const;
+
 private:
-    std::byte* start;
+    std::byte* data;
     std::size_t size;
     std::size_t pos;
 };
 
 template <typename T>
 concept IsStreamReadable = std::is_scalar_v<T>;
+
 
 // Assume endianness is same as host
 template<class Source> class InputStream {
@@ -44,8 +52,13 @@ public:
 
     StreamResult lastReadResult() const;
 
-    template<IsStreamReadable T>
-    std::tuple<T, StreamResult> read();
+    bool ok() const;
+
+    bool eof() const;
+
+    template<IsStreamReadable T> T read();
+
+    InputStream slice(std::size_t start, std::size_t size) const requires IsSlicable<Source>;
 
 private:
     Source source;
@@ -94,7 +107,7 @@ private:
 };
 
 inline MemorySource::MemorySource(std::byte* start, std::size_t size) :
-    start(start), size(size) {}
+    data(start), size(size), pos(0) {}
 
 inline void MemorySource::seek(std::size_t position) {
     pos = position;
@@ -109,10 +122,18 @@ inline StreamResult MemorySource::read(std::size_t bytesToRead, std::byte* dest)
         return StreamResult::END_OF_STREAM; 
     }
 
-    memcpy(dest, start + pos, bytesToRead);
+    memcpy(dest, data + pos, bytesToRead);
     pos += bytesToRead;
 
     return StreamResult::OK;
+}
+
+inline MemorySource MemorySource::slice(std::size_t start, std::size_t size) const {
+    if (start + size > this->size) {
+        return MemorySource(nullptr, 0);
+    }
+
+    return MemorySource(this->data + start, size);
 }
 
 template<class Source> InputStream<Source>::InputStream(Source buffer) :
@@ -120,6 +141,9 @@ template<class Source> InputStream<Source>::InputStream(Source buffer) :
     status(StreamResult::OK) {}
 
 template<class Source> InputStream<Source>& InputStream<Source>::seek(std::size_t pos) {
+    if (!ok()) {
+        return *this;
+    }
     source.seek(pos);
     return *this;
 }
@@ -132,13 +156,31 @@ template<class Source> StreamResult InputStream<Source>::lastReadResult() const 
     return status;
 }
 
+template<class Source> bool InputStream<Source>::ok() const {
+    return status == StreamResult::OK;
+}
+
+template<class Source> bool InputStream<Source>::eof() const {
+    return status == StreamResult::END_OF_STREAM;
+}
+
+
 template<class Source>
-template<IsStreamReadable T>
-std::tuple<T, StreamResult> InputStream<Source>::read() {
+InputStream<Source> InputStream<Source>::slice(std::size_t start, std::size_t size) const requires IsSlicable<Source>{
+    auto sliced = source.slice(start, size);
+    return InputStream(sliced);
+}
+
+template<class Source>
+template<IsStreamReadable T> T InputStream<Source>::read() {
+    if (!ok()) {
+        return T{};
+    }
+    
     T value;
     status = source.read(sizeof(T), reinterpret_cast<std::byte*>(&value));
 
-    return { value, status };
+    return value;
 }
 
 template<IsStreamReadable T, class Source>
@@ -162,7 +204,7 @@ template<IsStreamReadable T, class Source>
 InputStreamIterator<T, Source>::InputStreamIterator(InputStream<Source>& stream) :
     stream(&stream) 
 {
-    readValue = std::get<T>(stream.template read<T>());
+    readValue = stream.template read<T>();
 };
 
 template<IsStreamReadable T, class Source>
@@ -177,7 +219,7 @@ const InputStreamIterator<T, Source>::pointer InputStreamIterator<T, Source>::op
 
 template<IsStreamReadable T, class Source>
 InputStreamIterator<T, Source>& InputStreamIterator<T, Source>::operator++() {
-    readValue = std::get<T>(stream->template read<T>());
+    readValue = stream->template read<T>();
 
     return *this;
 }
@@ -185,7 +227,7 @@ InputStreamIterator<T, Source>& InputStreamIterator<T, Source>::operator++() {
 template<IsStreamReadable T, class Source>
 InputStreamIterator<T, Source> InputStreamIterator<T, Source>::operator++(int) {
     auto current = InputStreamIterator(*this);
-    readValue = std::get<T>(stream->template read<T>());
+    readValue = stream->template read<T>();
 
     return current;
 }

@@ -8,7 +8,7 @@ SRC_FILES := $(wildcard $(SRC_DIR)/*.cpp) $(wildcard $(SRC_DIR)/*/*.cpp)
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRC_FILES))
 DEPS := deps.d
 
-$(OBJ_DIR)/libkernel.a: $(OBJ_FILES) ${OBJ_DIR}/cpu_asm.o $(OBJ_DIR)/font.o
+$(OBJ_DIR)/libkernel.a: $(OBJ_FILES) ${OBJ_DIR}/cpu_asm.o $(OBJ_DIR)/font.o ../libr/build/libr.a
 	ar rcs $@ $^
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp

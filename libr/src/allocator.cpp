@@ -14,6 +14,15 @@ void Allocator::deallocate(void *p, std::size_t bytes, std::size_t alignment) {
 BumpAllocator::BumpAllocator(void* buffer, std::size_t size) :
     buffer(buffer), available(size) { }
 
+BumpAllocator::BumpAllocator(BumpAllocator&& other) :
+    buffer(other.buffer),
+    available(other.available)
+{
+    other.buffer = nullptr;
+    other.available = 0;
+}
+
+
 void *BumpAllocator::do_allocate(std::size_t bytes, std::size_t alignment) {
     auto p = std::align(alignment, bytes, buffer, available);
     if (p == nullptr) {

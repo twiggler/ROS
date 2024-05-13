@@ -154,7 +154,7 @@ Kernel makeKernel() {
     auto memorySource = rlib::MemorySource(reinterpret_cast<std::byte*>(bootboot.initrd_ptr), bootboot.initrd_size);
     auto inputStream = rlib::InputStream(std::move(memorySource));
     
-    return Kernel(tableLevel4, std::move(pageMapper), cpu, std::move(inputStream));
+    return Kernel(tableLevel4, std::move(pageMapper), cpu, std::move(allocator), std::move(inputStream));
 }
 
 int main()

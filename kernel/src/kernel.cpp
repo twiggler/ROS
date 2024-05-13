@@ -1,18 +1,24 @@
 #include "kernel/kernel.hpp"
 #include <kernel/error.hpp>
 #include <libr/ustar.hpp>
+#include <libr/elf.hpp>
 
 using namespace Memory;
 using namespace rlib;
 
-Kernel::Kernel(std::uint64_t* tableLevel4, PageMapper pageMapper, Cpu& cpu, InputStream<rlib::MemorySource> initrd) :
+Kernel::Kernel(std::uint64_t* tableLevel4, PageMapper pageMapper, Cpu& cpu, BumpAllocator allocator, InputStream<rlib::MemorySource> initrd) :
     pageMapper(std::move(pageMapper)),
     cpu(&cpu)
 {
     cpu.growStack(tableLevel4, 64_KiB, pageMapper);
-    auto [archive, result] = UStar::lookup(initrd, "kernel.x86_64.elf"_sv);
-    if (result != UStar::LookupResult::Code::OK) {
+    
+    auto [elf, lookupResult] = UStar::lookup(initrd, "serial.elf"_sv);
+    if (lookupResult != UStar::LookupResult::Code::OK) {
         panic("Cannot find kernel");
+    }
+    auto [parsedElf, parseResult] = Elf::parseElf(elf, allocator);
+    if (parseResult != Elf::ElfParseResult::Code::OK) {
+        panic("Cannot parse kernel");
     }
 }
 
