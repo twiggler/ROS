@@ -1,4 +1,4 @@
-CPPFLAGS = -g -std=c++20 -Wall -fpic -ffreestanding -fno-stack-protector -fno-exceptions -fno-rtti -nostdlib -mno-red-zone -mgeneral-regs-only \
+CPPFLAGS = -g -std=c++23 -Wall -fpic -ffreestanding -fno-stack-protector -fno-exceptions -fno-rtti -nostdlib -mno-red-zone -mgeneral-regs-only \
 		-I./bootboot/dist/ -I../libr/include -I../kernel/include
 LDFLAGS = -g -nostdlib -L ../libr/build -L ../kernel/build -T link.ld
 LDLIBS = -lkernel -lr 

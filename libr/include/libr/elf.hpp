@@ -1,9 +1,11 @@
 #pragma once
 
+#include <algorithm>
 #include "stream.hpp"
 #include "pointer.hpp"
 #include <optional>
 #include "allocator.hpp"
+#include <ranges>
 
 namespace rlib::Elf {
 
@@ -37,7 +39,13 @@ struct Segment {
         static constexpr auto Readable = Type(4);
     };
 
-    std::uint32_t type;
+    struct Type {
+        using _Type = std::uint32_t;
+        
+        static constexpr auto Load = _Type(1);
+    }; 
+
+    Type::_Type type;
     Flags::Type flags;
     std::uintptr_t fileOffset;
     std::uintptr_t virtualAddress; 

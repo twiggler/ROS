@@ -1,6 +1,7 @@
 #include <kernel/cpu.hpp>
 #include <kernel/error.hpp>
 #include <tuple>
+#include <kernel/cpu.hpp>
 
 using namespace Memory;
 
@@ -11,6 +12,10 @@ extern "C" void setIdt(std::uint16_t size, IdtDescriptor* base);
 extern "C" void initializePIC(std::uint8_t masterVectorOffset, std::uint8_t slaveMasterOffset);
 
 extern "C" bool notifyEndOfInterrupt(std::uint8_t IRQ);
+
+extern "C" std::uint64_t createContext(uintptr_t cr3, std::uint64_t entryPoint, std::uint64_t stackTop, std::uint64_t arg1);
+
+extern "C" void switchContext(std::uint64_t contextId);
 
 struct GdtAccess {
     using Type = std::uint8_t;
@@ -149,10 +154,18 @@ void Cpu::enableInterrupts() {
     asm volatile ("sti");
 }
 
-void Cpu::setupGdt(rlib::Allocator& allocator) {
+std::uint64_t Cpu::createContext(uintptr_t cr3, std::uint64_t entryPoint, std::uint64_t stackTop, std::uint64_t arg1) {
+    return ::createContext(cr3, entryPoint, stackTop, arg1);
+}
+
+void Cpu::switchContext(std::uint64_t contextId) {
+    ::switchContext(contextId);
+}
+
+void Cpu::setupGdt(rlib::Allocator &allocator) {
     constexpr auto DataSegmentAccess = GdtAccess::CodeDataSegment
-                                      | GdtAccess::Present
-                                      | GdtAccess::ReadableWritable;
+                                       | GdtAccess::Present
+                                       | GdtAccess::ReadableWritable;
     constexpr auto CodeSegmentAccess = DataSegmentAccess | GdtAccess::Executable;
     constexpr auto KernelDataSegment = 2;
     constexpr auto TssSegmentBase = 5;
@@ -197,12 +210,10 @@ void Cpu::setupIdt() {
 std::uint64_t Register::CR3::read() {
     std::uint64_t cr3;
 
-    asm (
+    asm volatile (
         "mov %%cr3, %%rax;"
         "mov %%rax, %0"
-    : "=m" (cr3)
-    : // No input
-    : "%rax"
+    : "=m" (cr3) : : "%rax"
     );
 
     return cr3;

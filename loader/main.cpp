@@ -35,6 +35,9 @@ FrameBufferInfo getFrameBufferInfo() {
 template <typename R>
 concept BlockRange = std::ranges::forward_range<R> && std::same_as<std::ranges::range_value_t<R>, Memory::Block>;
 
+// The OneShotAllocator is a simple allocator that can only allocate once. 
+// It solves the chicken-and-egg problem of needing an allocator to allocate storage for the page frame allocator.
+// A suitable block of memory is found by searching the memory map provided by BOOTBOOT.
 class OneShotAllocator : public rlib::Allocator {
     BlockRange auto availableBlockView() const {
         return memoryMap
@@ -50,6 +53,7 @@ public:
 
 
     BlockRange auto freeBlocks() const {
+        // We cannot allocate memory yet, so return a lazy sequence.
         return availableBlockView() | std::views::transform([this](auto block) { 
             if (block.startAddress == allocatedBlock.startAddress) {
                 block.take(allocatedBlock.size).align(frameSize); 
@@ -60,6 +64,11 @@ public:
     }
 private:
     virtual void* do_allocate(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t)) {
+        // We can only allocate once
+        if (allocatedBlock.startAddress != 0) {
+            return nullptr;
+        }
+
         auto availableBlocks = availableBlockView();
         auto storageBlock = std::ranges::find_if(availableBlocks, [=](auto block) { return block.size >= bytes + alignment; });
         if (storageBlock == availableBlocks.end()) {
@@ -68,6 +77,7 @@ private:
         allocatedBlock = (*storageBlock).resize(bytes + alignment);
 
         // Prevent allocation at physical address 0x0, which is identity mapped to virtual address 0x0 
+        // and indistinguishable from a null pointer.
         return reinterpret_cast<void*>(allocatedBlock.startAddress + alignment);
     }
 
@@ -154,7 +164,7 @@ Kernel makeKernel() {
     auto memorySource = rlib::MemorySource(reinterpret_cast<std::byte*>(bootboot.initrd_ptr), bootboot.initrd_size);
     auto inputStream = rlib::InputStream(std::move(memorySource));
     
-    return Kernel(tableLevel4, std::move(pageMapper), cpu, std::move(allocator), std::move(inputStream));
+    return Kernel(tableLevel4, std::move(pageMapper), cpu, std::move(allocator), std::move(inputStream), &fb);
 }
 
 int main()

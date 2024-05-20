@@ -125,8 +125,18 @@ enum class MapResult : int {
     ALREADY_MAPPED = -2
 };
 
+struct Region {
+    void*          ptr;
+    std::uintptr_t physicalAddress;
+};
+
 class PageMapper {
 public:
+    struct Table {
+        std::uint64_t* ptr;
+        std::uintptr_t physicalAddress;
+    };
+
     /**
      * Construct a new page mapper.
      * 
@@ -137,18 +147,26 @@ public:
      */ 
     PageMapper(std::uintptr_t offset, PageFrameAllocator frameAllocator);
 
-    MapResult map(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
+    MapResult map(std::uint64_t* addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
     
-    std::size_t unmap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress);
+    std::size_t unmap(std::uint64_t* addressSpace, VirtualAddress virtualAddress);
     
-    MapResult allocateAndMap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags);
+    PageMapper::Table createAddressSpace();
+    
+    MapResult shallowCopyMapping(std::uint64_t* destAddressSpace, std::uint64_t* sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress);
 
-    MapResult allocateAndMapContiguous(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
+    Region allocate();
+    
+    MapResult allocateAndMap(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags);
+
+    MapResult allocateAndMapContiguous(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
 
     void relocate(std::uintptr_t newOffset);
 
 private:
-    std::uint64_t* ensurePageTable(std::uint64_t&);
+    std::uint64_t* ensurePageTable(std::uint64_t& rawParentEntry);
+
+    Table createPageTable();
 
     std::uintptr_t offset;
     PageFrameAllocator frameAllocator;

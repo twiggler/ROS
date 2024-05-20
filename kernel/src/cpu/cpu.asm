@@ -1,9 +1,37 @@
+struc Context
+    .cp3    resq    1 ; Control processor register
+    .rip    resq    1 ; Instruction pointer
+    .rsp    resq    1 ; Stack pointer
+    .rax    resq    1 ; General purpose registers
+    .rbx    resq    1
+    .rcx    resq    1
+    .rdx    resq    1
+    .rsi    resq    1
+    .rdi    resq    1
+    .rbp    resq    1
+    .r8     resq    1
+    .r9     resq    1
+    .r10    resq    1
+    .r11    resq    1
+    .r12    resq    1
+    .r13    resq    1
+    .r14    resq    1
+    .r15    resq    1
+endstruc
+
+section .bss
+
+; We only store the context of a single task for now
+contextInstance resb Context_size
+
 section .text
 
 global setGdt
 global setIdt
 global notifyEndOfInterrupt
 global initializePIC
+global createContext
+global switchContext
 
 MasterPicCommandPort    equ     0x20
 MasterPicDataPort       equ     MasterPicCommandPort + 1
@@ -132,5 +160,30 @@ notifyEndOfInterrupt:
     out     MasterPicCommandPort, al
     xor     rax, rax
     ret
+
+; rdi:  cp3
+; rsi:  rip
+; rdx:  rsp
+; rcx:  arg1 passed to main
+createContext:
+    mov     [contextInstance + Context.cp3], rdi
+    mov     [contextInstance + Context.rip], rsi
+    mov     [contextInstance + Context.rsp], rdx
+    mov     [contextInstance + Context.rdi], rcx    ; first argument to main
+
+    mov     eax, 1  ; Return context id
+    ret
+
+; rdi = context id
+switchContext:
+    ; This will become the syscall handler.
+    ; For now, this routine is used to test the elf loader.
+    mov     rax, [contextInstance + Context.cp3]
+    mov     cr3, rax
+    mov     rsp, [contextInstance + Context.rsp]
+    mov     rdi, [contextInstance + Context.rdi]
+    
+    ; Note that we are still in ring 0.
+    jmp     [contextInstance + Context.rip]
 
 

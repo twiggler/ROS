@@ -4,7 +4,7 @@
 namespace rlib {
     
     template<class T, IsAllocator Alloc = Allocator>
-    class OwningPointer {
+    class OwningPointer  {
     public:
         using Element = std::remove_extent_t<T>;
         
@@ -40,6 +40,10 @@ namespace rlib {
         Element* get() const;
 
         std::size_t size() const requires(std::is_array_v<T>);
+
+        auto begin() const requires(std::is_array_v<T>);
+
+        auto end() const requires(std::is_array_v<T>);
         
         ~OwningPointer();
 
@@ -136,6 +140,16 @@ namespace rlib {
     template<class T, IsAllocator Alloc>
     const OwningPointer<T, Alloc>::Element& OwningPointer<T, Alloc>::operator[](std::size_t index) const requires std::is_array_v<T> {
         return pointer[index];
+    }
+
+    template<class T, IsAllocator Alloc>
+    auto OwningPointer<T, Alloc>::begin() const requires(std::is_array_v<T>) {
+        return pointer;
+    }
+
+    template<class T, IsAllocator Alloc>
+    auto OwningPointer<T, Alloc>::end() const requires(std::is_array_v<T>) {
+        return pointer + extent;
     }
 
     template<class T, IsAllocator Alloc>

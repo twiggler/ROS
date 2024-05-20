@@ -1,5 +1,5 @@
 #include "kernel/paging.hpp"
-#include <memory>
+#include <utility>
 
 namespace Memory {
 
@@ -114,9 +114,9 @@ constexpr std::uint64_t PageTableEntry::encodedPhysicalAddress(std::uint64_t add
 PageMapper::PageMapper(std::uintptr_t offset, PageFrameAllocator allocator) :
     offset(offset), frameAllocator(std::move(allocator)) {}
 
-MapResult PageMapper::map(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
+MapResult PageMapper::map(std::uint64_t* addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
     auto indexLevel4 = virtualAddress.indexLevel4();
-    auto tableLevel3 = ensurePageTable(tableLevel4[indexLevel4]); 
+    auto tableLevel3 = ensurePageTable(addressSpace[indexLevel4]); 
     if (tableLevel3 == nullptr) {
         return MapResult::OUT_OF_PHYSICAL_MEMORY;
     }
@@ -166,9 +166,9 @@ MapResult PageMapper::map(std::uint64_t* tableLevel4, VirtualAddress virtualAddr
     return MapResult::OK;
 }
 
-std::size_t PageMapper::unmap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress) {
+std::size_t PageMapper::unmap(std::uint64_t* addressSpace, VirtualAddress virtualAddress) {
     auto indexLevel4 = virtualAddress.indexLevel4();
-    auto entryLevel4 = PageTableEntry(tableLevel4[indexLevel4]);
+    auto entryLevel4 = PageTableEntry(addressSpace[indexLevel4]);
     if (!entryLevel4.isUsed()) {
         return 0;
     }
@@ -206,18 +206,47 @@ std::size_t PageMapper::unmap(std::uint64_t* tableLevel4, VirtualAddress virtual
     return 4_KiB;
 }
 
-MapResult PageMapper::allocateAndMap(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags) {
+PageMapper::Table PageMapper::createAddressSpace() {
+    auto table = createPageTable();
+
+    return table;
+}
+
+MapResult PageMapper::shallowCopyMapping(std::uint64_t* destAddressSpace, std::uint64_t* sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress) {
+    auto startIndex = startAddress.indexLevel4();
+    auto endIndex = endAddress.indexLevel4();
+    if (startIndex > endIndex) {
+        std::swap(startIndex, endIndex);
+    }
+    
+    for (auto i = startIndex; i <= endIndex; i++) {
+        destAddressSpace[i] = sourceAddressSpace[i];
+    }
+
+    return MapResult::OK;
+}
+
+Region PageMapper::allocate() {
+    auto block = frameAllocator.alloc();
+    if (block.size == 0) {
+        return { nullptr, 0 };
+    }
+
+    return { reinterpret_cast<void*>(offset + block.startAddress), block.startAddress };
+}
+
+MapResult PageMapper::allocateAndMap(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags) {
     auto block = frameAllocator.alloc();
     if (block.size == 0) {
         return MapResult::OUT_OF_PHYSICAL_MEMORY;
     }
 
-    return map(tableLevel4, virtualAddress, block.startAddress, PageSize::_4KiB, flags);
+    return map(addressSpace, virtualAddress, block.startAddress, PageSize::_4KiB, flags);
 }
 
-MapResult PageMapper::allocateAndMapContiguous(std::uint64_t* tableLevel4, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
+MapResult PageMapper::allocateAndMapContiguous(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
     for (auto i = std::size_t(0); i < nFrames; i++) {
-        auto result = allocateAndMap(tableLevel4, virtualAddress + i * 4_KiB, flags);
+        auto result = allocateAndMap(addressSpace, virtualAddress + i * 4_KiB, flags);
         if (result != MapResult::OK) {
             return result;
         }
@@ -230,28 +259,38 @@ void PageMapper::relocate(std::uintptr_t newOffset) {
     offset = newOffset;
 }
 
-std::uint64_t *PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) { 
+std::uint64_t* PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) { 
     auto entry = PageTableEntry(rawParentEntry);
     
     if (entry.isUsed()) {
         return reinterpret_cast<std::uint64_t*>(offset + entry.physicalAddress());
     } 
 
+    auto table = createPageTable();
+
+    rawParentEntry = PageTableEntry()
+        .setPhysicalAddress(table.physicalAddress)
+        .setFlags(PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible);
+
+    return table.ptr;
+}
+
+PageMapper::Table PageMapper::createPageTable() {
     auto newTableBlock = frameAllocator.alloc();
     if (newTableBlock.size == 0) {
-        return nullptr;
+        return { nullptr, 0 };
     }
+    
     auto tableStorage = reinterpret_cast<void*>(offset + newTableBlock.startAddress);
     auto table = new (tableStorage) (std::uint64_t[512]);
     for (auto i = 0; i < 512; i++) {
         table[i] = PageTableEntry::empty(); 
-    }    
+    }
 
-    rawParentEntry = PageTableEntry()
-        .setPhysicalAddress(newTableBlock.startAddress)
-        .setFlags(PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible);
-
-    return table;
+    return { 
+        table,
+        newTableBlock.startAddress
+    };
 }
 
 } // namespace Memory

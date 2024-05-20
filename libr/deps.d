@@ -1,2 +1,1 @@
-build/allocator.o: src/allocator.cpp include/libr/allocator.hpp
-include/libr/allocator.hpp:
+build/memory.o: src/memory.cpp

@@ -63,6 +63,10 @@ public:
 
     void enableInterrupts();
 
+    uint64_t createContext(std::uintptr_t cr3, std::uint64_t entryPoint, std::uint64_t stackTop, std::uint64_t arg1);
+
+    void switchContext(std::uint64_t context);
+
 private:
     template<std::uint8_t Irq> friend 
     __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame *frame);
@@ -76,8 +80,10 @@ private:
     static constexpr auto IstIndex = std::uint8_t(1);
     static constexpr auto IdtHardwareInterruptBase = std::uint8_t(32);
     
+    // Design: move into process struct?
     std::uintptr_t stackTop;
     std::size_t stackSize; 
+    
     uint64_t gdt[7];
     IdtDescriptor idt[256];
     // From the Intel 64 Architectures manual: Volume 3A 
