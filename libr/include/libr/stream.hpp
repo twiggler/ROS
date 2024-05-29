@@ -2,17 +2,19 @@
 
 #include <bit>
 #include <tuple>
-#include <iterator>
+#include <optional>
+#include <libr/error.hpp>
 #include <type_traits>
 #include <stddef.h>
-#include "memory.hpp"
+#include <libr/memory.hpp>
 
 namespace rlib {
 
-enum class StreamResult : int {
-    OK = 0,
-    END_OF_STREAM = -1
-};
+struct StreamErrorCategory : ErrorCategory{};
+
+inline constexpr auto streamErrorCategory = StreamErrorCategory{};
+
+inline constexpr auto EndOfStream = Error(-1, &streamErrorCategory);
 
 template <typename Source>
 concept IsSlicable = requires(Source source, std::size_t start, std::size_t size) {
@@ -27,7 +29,7 @@ public:
 
     std::size_t position() const;
 
-    StreamResult read(std::size_t size, std::byte* dest);
+    std::optional<Error> read(std::size_t size, std::byte* dest);
 
     MemorySource slice(std::size_t start, std::size_t size) const;
 
@@ -50,7 +52,7 @@ public:
 
     std::size_t position() const;
 
-    StreamResult lastReadResult() const;
+    std::optional<Error> error() const;
 
     bool ok() const;
 
@@ -63,7 +65,7 @@ public:
 private:
     Source source;
     std::size_t pos;
-    StreamResult status;
+    std::optional<Error> lastError;
 };
 
 template<IsStreamReadable T, class Source>
@@ -117,15 +119,15 @@ inline std::size_t MemorySource::position() const {
     return pos;
 }
 
-inline StreamResult MemorySource::read(std::size_t bytesToRead, std::byte* dest) {
+inline std::optional<Error> MemorySource::read(std::size_t bytesToRead, std::byte* dest) {
     if (pos + bytesToRead > size) {
-        return StreamResult::END_OF_STREAM; 
+        return EndOfStream;
     }
 
     memcpy(dest, data + pos, bytesToRead);
     pos += bytesToRead;
 
-    return StreamResult::OK;
+    return {};
 }
 
 inline MemorySource MemorySource::slice(std::size_t start, std::size_t size) const {
@@ -137,8 +139,7 @@ inline MemorySource MemorySource::slice(std::size_t start, std::size_t size) con
 }
 
 template<class Source> InputStream<Source>::InputStream(Source buffer) :
-    source(std::move(buffer)), 
-    status(StreamResult::OK) {}
+    source(std::move(buffer)) { }
 
 template<class Source> InputStream<Source>& InputStream<Source>::seek(std::size_t pos) {
     if (!ok()) {
@@ -152,16 +153,16 @@ template<class Source> std::size_t InputStream<Source>::position() const {
     return source.position();
 }
 
-template<class Source> StreamResult InputStream<Source>::lastReadResult() const {
-    return status;
+template<class Source> std::optional<Error> InputStream<Source>::error() const {
+    return lastError;
 }
 
 template<class Source> bool InputStream<Source>::ok() const {
-    return status == StreamResult::OK;
+    return !lastError;
 }
 
 template<class Source> bool InputStream<Source>::eof() const {
-    return status == StreamResult::END_OF_STREAM;
+    return lastError == EndOfStream;
 }
 
 
@@ -178,7 +179,7 @@ template<IsStreamReadable T> T InputStream<Source>::read() {
     }
     
     T value;
-    status = source.read(sizeof(T), reinterpret_cast<std::byte*>(&value));
+    lastError = source.read(sizeof(T), reinterpret_cast<std::byte*>(&value));
 
     return value;
 }
@@ -234,7 +235,7 @@ InputStreamIterator<T, Source> InputStreamIterator<T, Source>::operator++(int) {
 
 template<IsStreamReadable T, class Source>
 bool InputStreamIterator<T, Source>::operator==(std::default_sentinel_t) const {
-    return stream->lastReadResult() != StreamResult::OK;
+    return stream->error().has_value();
 }
 
 template<IsStreamReadable T, class Source>

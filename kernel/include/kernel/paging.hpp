@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <libr/allocator.hpp>
+#include <libr/error.hpp>
 #include <libr/pointer.hpp>
 #include <optional>
+#include <expected>
 
 namespace Memory {
 
@@ -18,6 +20,12 @@ constexpr std::size_t operator ""_MiB(unsigned long long int x) {
 constexpr std::size_t operator ""_GiB(unsigned long long int x) {
   return 1024_MiB * x;
 }
+
+struct VirtualMemoryCategory : rlib::ErrorCategory {}
+inline constexpr virtualMemoryCategory = VirtualMemoryCategory{};
+
+inline constexpr auto OutOfPhysicalMemory = rlib::Error(-1, &virtualMemoryCategory);
+inline constexpr auto AlreadyMapped = rlib::Error(-2, &virtualMemoryCategory);
 
 struct Block {
     std::uintptr_t startAddress;
@@ -47,7 +55,7 @@ public:
 
     std::size_t physicalMemory() const;
 
-    Block alloc();
+    std::expected<Block, rlib::Error> alloc();
 
     void dealloc(void* ptr);
 private:
@@ -119,12 +127,6 @@ private:
     std::uint64_t entry;
 };
 
-enum class MapResult : int {
-    OK = 0,
-    OUT_OF_PHYSICAL_MEMORY = -1,
-    ALREADY_MAPPED = -2
-};
-
 struct Region {
     void*          ptr;
     std::uintptr_t physicalAddress;
@@ -147,26 +149,26 @@ public:
      */ 
     PageMapper(std::uintptr_t offset, PageFrameAllocator frameAllocator);
 
-    MapResult map(std::uint64_t* addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
+    std::optional<rlib::Error> map(std::uint64_t* addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
     
     std::size_t unmap(std::uint64_t* addressSpace, VirtualAddress virtualAddress);
     
-    PageMapper::Table createAddressSpace();
+    std::expected<PageMapper::Table, rlib::Error> createAddresssSpace();
     
-    MapResult shallowCopyMapping(std::uint64_t* destAddressSpace, std::uint64_t* sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress);
+    void shallowCopyMapping(std::uint64_t* destAddressSpace, std::uint64_t* sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress);
 
-    Region allocate();
+    std::expected<Region, rlib::Error> allocate();
     
-    MapResult allocateAndMap(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags);
+    std::optional<rlib::Error> allocateAndMap(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags);
 
-    MapResult allocateAndMapContiguous(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
+    std::optional<rlib::Error> allocateAndMapContiguous(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
 
     void relocate(std::uintptr_t newOffset);
 
 private:
-    std::uint64_t* ensurePageTable(std::uint64_t& rawParentEntry);
+    std::expected<std::uint64_t*, rlib::Error> ensurePageTable(std::uint64_t& rawParentEntry);
 
-    Table createPageTable();
+    std::expected<PageMapper::Table, rlib::Error> createPageTable();
 
     std::uintptr_t offset;
     PageFrameAllocator frameAllocator;

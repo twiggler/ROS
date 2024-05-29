@@ -1,3 +1,6 @@
+; As long as we do not have our own linker, add a GNU-stack note to make "ld" shup up.
+section .note.GNU-stack noalloc noexec nowrite progbits
+
 struc Context
     .cp3    resq    1 ; Control processor register
     .rip    resq    1 ; Instruction pointer

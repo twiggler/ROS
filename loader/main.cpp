@@ -126,8 +126,8 @@ std::uintptr_t patchMemoryLayout(std::uint64_t* tableLevel4, PageMapper& pageMap
     constexpr auto higherHalf = std::uintptr_t(0xffff'8000'0000'0000);
     auto virtualAddress = higherHalf;
     for (auto physicalAddress = std::uint64_t(0); physicalAddress < physicalMemory; physicalAddress += 1_GiB) {
-        auto mapResult = pageMapper.map(tableLevel4, virtualAddress, physicalAddress, PageSize::_1GiB, flags);
-        if (mapResult != MapResult::OK) {
+        auto error = pageMapper.map(tableLevel4, virtualAddress, physicalAddress, PageSize::_1GiB, flags);
+        if (error) {
             panic("Cannot map physical memory");
         } 
         virtualAddress += 1_GiB;
@@ -140,8 +140,8 @@ std::uintptr_t patchMemoryLayout(std::uint64_t* tableLevel4, PageMapper& pageMap
 
 auto makeHeap(std::uint64_t* tableLevel4, PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
-    auto result = pageMapper.allocateAndMapContiguous(tableLevel4, heapStart, flags, heapSizeInFrames);
-    if (result != MapResult::OK) {
+    auto error = pageMapper.allocateAndMapContiguous(tableLevel4, heapStart, flags, heapSizeInFrames);
+    if (error) {
         panic("Cannot construct kernel heap");
     }
     Register::CR3::flushTLBS();

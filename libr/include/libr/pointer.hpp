@@ -1,4 +1,5 @@
 #pragma once
+
 #include "allocator.hpp"
 
 namespace rlib {
@@ -8,9 +9,9 @@ namespace rlib {
     public:
         using Element = std::remove_extent_t<T>;
         
-        OwningPointer();
+        constexpr OwningPointer();
 
-        OwningPointer(std::nullptr_t);
+        constexpr OwningPointer(std::nullptr_t);
         
         OwningPointer(T* pointer, Alloc& alloc) requires (!std::is_array_v<T>);
 
@@ -35,7 +36,7 @@ namespace rlib {
 
         const Element& operator[](std::size_t index) const requires std::is_array_v<T>;
 
-        void clear();
+        constexpr void clear();
 
         Element* get() const;
 
@@ -45,7 +46,7 @@ namespace rlib {
 
         auto end() const requires(std::is_array_v<T>);
         
-        ~OwningPointer();
+        constexpr ~OwningPointer();
 
     private:
         template<class E, IsAllocator U> friend class OwningPointer; 
@@ -70,11 +71,11 @@ namespace rlib {
 /* IMPLEMENTATION */
 
     template<class T, IsAllocator Alloc>
-    OwningPointer<T, Alloc>::OwningPointer() :
+    constexpr OwningPointer<T, Alloc>::OwningPointer() :
         pointer(nullptr), alloc(nullptr), extent{} {}
 
     template<class T, IsAllocator Alloc>
-    OwningPointer<T, Alloc>::OwningPointer(std::nullptr_t) :
+    constexpr OwningPointer<T, Alloc>::OwningPointer(std::nullptr_t) :
         pointer(nullptr), alloc(nullptr), extent{} {}
 
     template<class T, IsAllocator Alloc>
@@ -153,12 +154,12 @@ namespace rlib {
     }
 
     template<class T, IsAllocator Alloc>
-    OwningPointer<T, Alloc>::~OwningPointer() {
+    constexpr OwningPointer<T, Alloc>::~OwningPointer() {
         clear();
     }
 
     template<class T, IsAllocator Alloc>
-    void OwningPointer<T, Alloc>::clear() {
+    constexpr void OwningPointer<T, Alloc>::clear() {
         if (pointer == nullptr) {
             return;
         }

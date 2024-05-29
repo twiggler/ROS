@@ -37,12 +37,12 @@ std::size_t PageFrameAllocator::physicalMemory() const {
     return _physicalMemory;
 }
 
-Block PageFrameAllocator::alloc() { 
+std::expected<Block, rlib::Error> PageFrameAllocator::alloc() { 
     if (top == base.get()) {
-        return { 0, 0 }; 
+        return std::unexpected(OutOfPhysicalMemory);
     }
 
-    return {(*(--top)), frameSize };
+    return Block{(*(--top)), frameSize };
 }
 
 void PageFrameAllocator::dealloc(void *ptr) {
@@ -114,56 +114,56 @@ constexpr std::uint64_t PageTableEntry::encodedPhysicalAddress(std::uint64_t add
 PageMapper::PageMapper(std::uintptr_t offset, PageFrameAllocator allocator) :
     offset(offset), frameAllocator(std::move(allocator)) {}
 
-MapResult PageMapper::map(std::uint64_t* addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
+std::optional<rlib::Error> PageMapper::map(std::uint64_t* addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags) {
     auto indexLevel4 = virtualAddress.indexLevel4();
     auto tableLevel3 = ensurePageTable(addressSpace[indexLevel4]); 
-    if (tableLevel3 == nullptr) {
-        return MapResult::OUT_OF_PHYSICAL_MEMORY;
+    if (!tableLevel3) {
+        return tableLevel3.error();
     }
 
     auto indexLevel3 = virtualAddress.indexLevel3();
     if (pageSize == PageSize::_1GiB) {
-        if (PageTableEntry(tableLevel3[indexLevel3]).isUsed()) {
-            return MapResult::ALREADY_MAPPED;
+        if (PageTableEntry((*tableLevel3)[indexLevel3]).isUsed()) {
+            return AlreadyMapped;
         }
         
-        tableLevel3[indexLevel3] = PageTableEntry()
+        (*tableLevel3)[indexLevel3] = PageTableEntry()
             .setPhysicalAddress(physicalAddress)
             .setFlags(flags | PageFlags::HugePage);
 
-        return MapResult::OK;
+        return {};
     }
-    auto tableLevel2 = ensurePageTable(tableLevel3[indexLevel3]);
-    if (tableLevel2 == nullptr) {
-        return MapResult::OUT_OF_PHYSICAL_MEMORY;
+    auto tableLevel2 = ensurePageTable((*tableLevel3)[indexLevel3]);
+    if (!tableLevel2) {
+        return tableLevel2.error();
     }
 
     auto indexLevel2 = virtualAddress.indexLevel2();
     if (pageSize == PageSize::_2MiB) {
-         if (PageTableEntry(tableLevel2[indexLevel2]).isUsed()) {
-            return MapResult::ALREADY_MAPPED;
+         if (PageTableEntry((*tableLevel2)[indexLevel2]).isUsed()) {
+            return AlreadyMapped;
         }
 
-        tableLevel2[indexLevel2] = PageTableEntry()
+        (*tableLevel2)[indexLevel2] = PageTableEntry()
             .setPhysicalAddress(physicalAddress)
             .setFlags(flags | PageFlags::HugePage);
 
-        return MapResult::OK;
+        return {};
     }
-    auto tableLevel1 = ensurePageTable(tableLevel2[indexLevel2]);
-    if (tableLevel1 == nullptr) {
-        return MapResult::OUT_OF_PHYSICAL_MEMORY;
+    auto tableLevel1 = ensurePageTable((*tableLevel2)[indexLevel2]);
+    if (!tableLevel1) {
+        return tableLevel1.error();
     }
 
     auto indexLevel1 = virtualAddress.indexLevel1();
-    if (PageTableEntry(tableLevel1[indexLevel1]).isUsed()) {
-        return MapResult::ALREADY_MAPPED;
+    if (PageTableEntry((*tableLevel1)[indexLevel1]).isUsed()) {
+        return AlreadyMapped;
     }
-    tableLevel1[indexLevel1] = PageTableEntry()
+    (*tableLevel1)[indexLevel1] = PageTableEntry()
         .setPhysicalAddress(physicalAddress)
         .setFlags(flags);
 
-    return MapResult::OK;
+    return {};
 }
 
 std::size_t PageMapper::unmap(std::uint64_t* addressSpace, VirtualAddress virtualAddress) {
@@ -206,13 +206,11 @@ std::size_t PageMapper::unmap(std::uint64_t* addressSpace, VirtualAddress virtua
     return 4_KiB;
 }
 
-PageMapper::Table PageMapper::createAddressSpace() {
-    auto table = createPageTable();
-
-    return table;
+std::expected<PageMapper::Table, rlib::Error> PageMapper::createAddresssSpace() {
+    return createPageTable();
 }
 
-MapResult PageMapper::shallowCopyMapping(std::uint64_t* destAddressSpace, std::uint64_t* sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress) {
+void PageMapper::shallowCopyMapping(std::uint64_t* destAddressSpace, std::uint64_t* sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress) {
     auto startIndex = startAddress.indexLevel4();
     auto endIndex = endAddress.indexLevel4();
     if (startIndex > endIndex) {
@@ -222,44 +220,42 @@ MapResult PageMapper::shallowCopyMapping(std::uint64_t* destAddressSpace, std::u
     for (auto i = startIndex; i <= endIndex; i++) {
         destAddressSpace[i] = sourceAddressSpace[i];
     }
-
-    return MapResult::OK;
 }
 
-Region PageMapper::allocate() {
+std::expected<Region, rlib::Error> PageMapper::allocate() {
     auto block = frameAllocator.alloc();
-    if (block.size == 0) {
-        return { nullptr, 0 };
+    if (!block) {
+        return std::unexpected(OutOfPhysicalMemory);
     }
 
-    return { reinterpret_cast<void*>(offset + block.startAddress), block.startAddress };
+    return Region{reinterpret_cast<void*>(offset + block->startAddress), block->startAddress};
 }
 
-MapResult PageMapper::allocateAndMap(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags) {
+std::optional<rlib::Error> PageMapper::allocateAndMap(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags) {
     auto block = frameAllocator.alloc();
-    if (block.size == 0) {
-        return MapResult::OUT_OF_PHYSICAL_MEMORY;
+    if (!block) {
+        return block.error();
     }
 
-    return map(addressSpace, virtualAddress, block.startAddress, PageSize::_4KiB, flags);
+    return map(addressSpace, virtualAddress, block->startAddress, PageSize::_4KiB, flags);
 }
 
-MapResult PageMapper::allocateAndMapContiguous(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
+std::optional<rlib::Error> PageMapper::allocateAndMapContiguous(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
     for (auto i = std::size_t(0); i < nFrames; i++) {
-        auto result = allocateAndMap(addressSpace, virtualAddress + i * 4_KiB, flags);
-        if (result != MapResult::OK) {
-            return result;
+        auto error = allocateAndMap(addressSpace, virtualAddress + i * 4_KiB, flags);
+        if (error) {
+            return error;
         }
     }
     
-    return MapResult::OK;
+    return {};
 }
 
 void PageMapper::relocate(std::uintptr_t newOffset) {
     offset = newOffset;
 }
 
-std::uint64_t* PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) { 
+std::expected<std::uint64_t*, rlib::Error> PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) { 
     auto entry = PageTableEntry(rawParentEntry);
     
     if (entry.isUsed()) {
@@ -267,29 +263,32 @@ std::uint64_t* PageMapper::ensurePageTable(std::uint64_t& rawParentEntry) {
     } 
 
     auto table = createPageTable();
+    if (!table) {
+        return std::unexpected(table.error());
+    }
 
     rawParentEntry = PageTableEntry()
-        .setPhysicalAddress(table.physicalAddress)
+        .setPhysicalAddress(table->physicalAddress)
         .setFlags(PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible);
 
-    return table.ptr;
+    return table->ptr;
 }
 
-PageMapper::Table PageMapper::createPageTable() {
+std::expected<PageMapper::Table, rlib::Error> PageMapper::createPageTable() {
     auto newTableBlock = frameAllocator.alloc();
-    if (newTableBlock.size == 0) {
-        return { nullptr, 0 };
+    if (!newTableBlock) {
+        return std::unexpected(OutOfPhysicalMemory);
     }
     
-    auto tableStorage = reinterpret_cast<void*>(offset + newTableBlock.startAddress);
+    auto tableStorage = reinterpret_cast<void*>(offset + newTableBlock->startAddress);
     auto table = new (tableStorage) (std::uint64_t[512]);
     for (auto i = 0; i < 512; i++) {
         table[i] = PageTableEntry::empty(); 
     }
 
-    return { 
+    return Table{ 
         table,
-        newTableBlock.startAddress
+        newTableBlock->startAddress
     };
 }
 

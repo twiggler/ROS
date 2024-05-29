@@ -6,22 +6,14 @@
 #include "cpu.hpp"
 #include <libr/elf.hpp>
 
+struct KernelErrorCategory : rlib::ErrorCategory {};
+inline constexpr auto kernelErrorCategory = KernelErrorCategory{};
 
-struct LoadProcessResult {
-    enum class Code : int {
-        OK = 0,
-        CannotParseElf = -1,
-        CannotCreateAddressSpace = -2,
-        InvalidSegmentSize = -3,
-        CannotMapProcessMemory = -4,
-        CannotCopySegment = -5,
-        OutOfMemory = -6
-    } result;
-
-    rlib::Elf::ElfParseResult elfParseResult;
-    // This is getting akward. Implement an error class with a cause, which is possibly a variant.
-    rlib::StreamResult streamResult;
-};
+inline constexpr auto CannotParseElf = rlib::Error{-1, &kernelErrorCategory};
+inline constexpr auto CannotCreateAddressSpace = rlib::Error{-2, &kernelErrorCategory};
+inline constexpr auto InvalidSegmentSize = rlib::Error{-3, &kernelErrorCategory};
+inline constexpr auto CannotMapProcessMemory = rlib::Error{-4, &kernelErrorCategory};
+inline constexpr auto CannotCopySegment = rlib::Error{-5, &kernelErrorCategory};
 
 class Kernel {
 public:
@@ -32,7 +24,7 @@ public:
 
 private:
     // TODO: Implement type erased InputStream
-    LoadProcessResult loadProcess(rlib::InputStream<rlib::MemorySource>& process);    
+    std::optional<rlib::Error> loadProcess(rlib::InputStream<rlib::MemorySource>& process);    
 
     std::uint64_t*              addressSpace; 
     Memory::PageMapper          pageMapper;
