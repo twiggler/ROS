@@ -5,7 +5,7 @@
 using namespace Memory;
 using namespace rlib;
 
-Kernel::Kernel(std::uint64_t* addressSpace, PageMapper pageMapper, Cpu& cpu, BumpAllocator allocator, InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer) :
+Kernel::Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, BumpAllocator allocator, InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer) :
     addressSpace(addressSpace),
     pageMapper(std::move(pageMapper)),
     cpu(&cpu),
@@ -49,13 +49,13 @@ std::optional<rlib::Error> Kernel::loadProcess(rlib::InputStream<rlib::MemorySou
         return parsedElf.error();
     }
 
-    auto processAddressSpace = pageMapper.createAddresssSpace();
+    auto processAddressSpace = pageMapper.createPageTable();
     if (!processAddressSpace) {
         return CannotCreateAddressSpace;
     }
     
     // Map kernel into process address space.
-    pageMapper.shallowCopyMapping(processAddressSpace->ptr, addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF));
+    pageMapper.shallowCopyMapping(*processAddressSpace, addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF));
 
     for (const auto& segment : parsedElf->segments) {
         if (segment.type != Elf::Segment::Type::Load) {
@@ -90,7 +90,7 @@ std::optional<rlib::Error> Kernel::loadProcess(rlib::InputStream<rlib::MemorySou
                 return CannotCopySegment;
             }
             // Map the region into the process address space.
-            auto error = pageMapper.map(processAddressSpace->ptr, segment.virtualAddress, region->physicalAddress, PageSize::_4KiB, flags);
+            auto error = pageMapper.map(*processAddressSpace, segment.virtualAddress, region->physicalAddress, PageSize::_4KiB, flags);
             if (error) {
                 return CannotMapProcessMemory;
             }
@@ -104,12 +104,12 @@ std::optional<rlib::Error> Kernel::loadProcess(rlib::InputStream<rlib::MemorySou
     constexpr auto stackSize = 64_KiB;
     constexpr auto stackBottom = 0x8000'0000'0000 - stackSize;
     constexpr auto stackFlags = PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible | PageFlags::NoExecute;
-    auto error = pageMapper.allocateAndMapContiguous(processAddressSpace->ptr, stackBottom, stackFlags, stackSize / 4_KiB);
+    auto error = pageMapper.allocateAndMapContiguous(*processAddressSpace, stackBottom, stackFlags, stackSize / 4_KiB);
     if (error) {
         return *error;
     }
 
-    auto contextId = cpu->createContext(processAddressSpace->physicalAddress, parsedElf->startAddress, stackBottom + stackSize, reinterpret_cast<std::uintptr_t>(framebuffer));
+    auto contextId = cpu->createContext(processAddressSpace->physicalAddress(), parsedElf->startAddress, stackBottom + stackSize, reinterpret_cast<std::uintptr_t>(framebuffer));
     cpu->switchContext(contextId);
 
     return {};

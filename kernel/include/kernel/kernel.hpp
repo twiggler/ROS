@@ -18,7 +18,7 @@ inline constexpr auto CannotCopySegment = rlib::Error{-5, &kernelErrorCategory};
 class Kernel {
 public:
     // Design: Type erase allocator?
-    Kernel(std::uint64_t* addressSpace, Memory::PageMapper pageMapper, Cpu& cpu, rlib::BumpAllocator allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
+    Kernel(Memory::TableView addressSpace, Memory::PageMapper pageMapper, Cpu& cpu, rlib::BumpAllocator allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
 
     void run();
 
@@ -26,7 +26,7 @@ private:
     // TODO: Implement type erased InputStream
     std::optional<rlib::Error> loadProcess(rlib::InputStream<rlib::MemorySource>& process);    
 
-    std::uint64_t*              addressSpace; 
+    Memory::TableView           addressSpace; 
     Memory::PageMapper          pageMapper;
     Cpu*                        cpu;
     rlib::BumpAllocator         allocator;

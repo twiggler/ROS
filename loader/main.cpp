@@ -116,7 +116,7 @@ PageFrameAllocator makePageFrameAllocator() {
     return std::move(*pageFrameAllocator);
 }
 
-std::uintptr_t patchMemoryLayout(std::uint64_t* tableLevel4, PageMapper& pageMapper, std::size_t physicalMemory) {
+std::uintptr_t patchMemoryLayout(TableView tableLevel4, PageMapper& pageMapper, std::size_t physicalMemory) {
     // Map all physical memory to start of higher half virtual address space. 
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
     
@@ -138,7 +138,7 @@ std::uintptr_t patchMemoryLayout(std::uint64_t* tableLevel4, PageMapper& pageMap
     return virtualAddress;
 }
 
-auto makeHeap(std::uint64_t* tableLevel4, PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
+auto makeHeap(TableView tableLevel4, PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
     auto error = pageMapper.allocateAndMapContiguous(tableLevel4, heapStart, flags, heapSizeInFrames);
     if (error) {
@@ -153,8 +153,8 @@ Kernel makeKernel() {
     auto frameAllocator = makePageFrameAllocator();
     auto physicalMemory = frameAllocator.physicalMemory();
 
-    auto tableLevel4 = reinterpret_cast<std::uint64_t*>(Register::CR3::read());
     auto pageMapper = PageMapper(0 /* Bootboot identity maps first 16GB */, std::move(frameAllocator));
+    auto tableLevel4 = pageMapper.mapTableView(Register::CR3::read());
 
     auto heapStart = patchMemoryLayout(tableLevel4, pageMapper, physicalMemory);
     auto allocator = makeHeap(tableLevel4, pageMapper, heapStart, 4);
@@ -164,7 +164,8 @@ Kernel makeKernel() {
     auto memorySource = rlib::MemorySource(reinterpret_cast<std::byte*>(bootboot.initrd_ptr), bootboot.initrd_size);
     auto inputStream = rlib::InputStream(std::move(memorySource));
     
-    return Kernel(tableLevel4, std::move(pageMapper), cpu, std::move(allocator), std::move(inputStream), &fb);
+    auto relocatedTableLevel4 = pageMapper.mapTableView(Register::CR3::read());
+    return Kernel(relocatedTableLevel4, std::move(pageMapper), cpu, std::move(allocator), std::move(inputStream), &fb);
 }
 
 int main()

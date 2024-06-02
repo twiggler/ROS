@@ -47,6 +47,7 @@ struct Block {
     Block resize(std::size_t newSize) const;
 };
 
+// Basic page frame allocator owning a stack of physical memory frames. 
 class PageFrameAllocator {
 public:
     static std::optional<PageFrameAllocator> make(rlib::Allocator& allocator, std::size_t physicalMemory, std::size_t frameSize);
@@ -101,44 +102,51 @@ private:
     std::uintptr_t address;
 };
 
-class PageTableEntry {
+class TableEntryView {
 public:
-    PageTableEntry() = default;
-    
-    PageTableEntry(std::uint64_t);
+    explicit TableEntryView(std::uint64_t& entry);
 
+    TableEntryView& operator=(const TableEntryView&);
+    
     bool isUsed() const;
 
     PageFlags::Type flags() const;
 
     std::uint64_t physicalAddress() const;
 
-    PageTableEntry& setFlags(PageFlags::Type flags);
+    TableEntryView setFlags(PageFlags::Type flags);
 
-    PageTableEntry& setPhysicalAddress(std::uint64_t address);
+    TableEntryView setPhysicalAddress(std::uint64_t address);
 
-    static PageTableEntry empty(); 
-
-    operator std::uint64_t() const;
+    void clear(); 
 
 private:
     static constexpr std::uint64_t encodedPhysicalAddress(std::uint64_t address); 
 
-    std::uint64_t entry;
+    std::uint64_t* entry;
 };
 
-struct Region {
+// Both TableEntryView and TableView do not own their data.
+class TableView {
+public:
+    TableView(std::uint64_t* ptr, std::uintptr_t physicalAddress);
+
+    TableEntryView at(std::uint16_t index);
+
+    std::uintptr_t physicalAddress() const;
+
+private:    
+    std::uint64_t* ptr;
+    std::uintptr_t _physicalAddress;
+};
+
+struct PageFrame {
     void*          ptr;
     std::uintptr_t physicalAddress;
 };
 
 class PageMapper {
 public:
-    struct Table {
-        std::uint64_t* ptr;
-        std::uintptr_t physicalAddress;
-    };
-
     /**
      * Construct a new page mapper.
      * 
@@ -149,26 +157,28 @@ public:
      */ 
     PageMapper(std::uintptr_t offset, PageFrameAllocator frameAllocator);
 
-    std::optional<rlib::Error> map(std::uint64_t* addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
+    TableView mapTableView(std::uintptr_t physicalAddress) const;
     
-    std::size_t unmap(std::uint64_t* addressSpace, VirtualAddress virtualAddress);
+    std::expected<TableView, rlib::Error> createPageTable();
     
-    std::expected<PageMapper::Table, rlib::Error> createAddresssSpace();
+    std::optional<rlib::Error> map(TableView addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
     
-    void shallowCopyMapping(std::uint64_t* destAddressSpace, std::uint64_t* sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress);
+    std::size_t unmap(TableView addressSpace, VirtualAddress virtualAddress);
+    
+    std::expected<PageFrame, rlib::Error> allocate();
+       
+    std::optional<rlib::Error> allocateAndMap(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags);
 
-    std::expected<Region, rlib::Error> allocate();
+    std::optional<rlib::Error> allocateAndMapContiguous(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
+
+    void shallowCopyMapping(TableView destAddressSpace, TableView sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress);
     
-    std::optional<rlib::Error> allocateAndMap(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags);
-
-    std::optional<rlib::Error> allocateAndMapContiguous(std::uint64_t* addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
-
     void relocate(std::uintptr_t newOffset);
 
 private:
-    std::expected<std::uint64_t*, rlib::Error> ensurePageTable(std::uint64_t& rawParentEntry);
+    std::expected<TableView, rlib::Error> ensurePageTable(TableEntryView entry);
 
-    std::expected<PageMapper::Table, rlib::Error> createPageTable();
+    TableView mapTableView(TableEntryView entry) const; 
 
     std::uintptr_t offset;
     PageFrameAllocator frameAllocator;
