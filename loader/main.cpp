@@ -10,7 +10,7 @@
 #include <kernel/paging.hpp>
 #include <libr/allocator.hpp>
 #include <kernel/cpu.hpp>
-#include <kernel/error.hpp>
+#include <kernel/panic.hpp>
 #include <concepts>
 
 // BOOTBOOT imported virtual addresses, see see linker script
@@ -108,7 +108,7 @@ PageFrameAllocator makePageFrameAllocator() {
     for (auto block : oneShotAllocator->freeBlocks()) {
         auto startAddress = block.startAddress;
         while (startAddress < block.startAddress + block.size) {
-            pageFrameAllocator->dealloc(reinterpret_cast<void*>(startAddress));
+            pageFrameAllocator->dealloc(startAddress);
             startAddress += frameSize;
         } 
     }
@@ -140,7 +140,7 @@ std::uintptr_t patchMemoryLayout(TableView tableLevel4, PageMapper& pageMapper, 
 
 auto makeHeap(TableView tableLevel4, PageMapper& pageMapper, std::uintptr_t heapStart, std::size_t heapSizeInFrames) {
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;    
-    auto error = pageMapper.allocateAndMapContiguous(tableLevel4, heapStart, flags, heapSizeInFrames);
+    auto error = pageMapper.allocateAndMapRange(tableLevel4, heapStart, flags, heapSizeInFrames);
     if (error) {
         panic("Cannot construct kernel heap");
     }

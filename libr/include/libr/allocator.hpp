@@ -39,4 +39,16 @@ namespace rlib {
 
     template <typename T>
     concept IsAllocator = std::is_base_of_v<Allocator, T>;
+
+    template <typename T, IsAllocator Alloc, class... Args>
+    T* constructRaw(Alloc& allocator, Args&&... args) {
+        void *storage = allocator.allocate(sizeof(T), alignof(T));
+        return ::new (storage) T(std::forward<Args>(args)...);
+    }
+
+    template<typename T, IsAllocator Alloc>
+    void destruct(T* ptr, Alloc& allocator) {
+        ptr->~T();
+        allocator.deallocate(ptr, sizeof(T), alignof(T));
+    }
 }

@@ -69,31 +69,16 @@ private:
 };
 
 template<IsStreamReadable T, class Source>
-class StreamRange : public std::ranges::view_interface<StreamRange<T, Source>> {
-public:
-    explicit StreamRange(InputStream<Source>& stream);
-
-    auto begin() const;
-    
-    auto end() const; 
-
-private:
-    InputStream<Source>* stream;
-};
-
-template<IsStreamReadable T, class Source>
 class InputStreamIterator{
 public:
-    using element_type = T;
-    using pointer = element_type*;
-    using reference = element_type;
+    using value_type = T;
     using difference_type = std::ptrdiff_t;
 
     explicit InputStreamIterator(InputStream<Source>& stream);
 
-    reference operator*() const;
+    T operator*() const;
 
-    const pointer operator->() const;
+    const T* operator->() const;
 
     InputStreamIterator& operator++();
 
@@ -106,6 +91,22 @@ public:
 private:
     InputStream<Source>* stream;
     T readValue;
+};
+
+template<IsStreamReadable T, class Source>
+class StreamRange : public std::ranges::view_interface<StreamRange<T, Source>> {
+public:
+    explicit StreamRange(InputStream<Source>& stream) :
+        stream(&stream) { }
+
+    auto begin() const {
+        return InputStreamIterator<T, Source>(*stream);
+    }
+    
+    auto end() const { return std::default_sentinel; } 
+
+private:
+    InputStream<Source>* stream;
 };
 
 inline MemorySource::MemorySource(std::byte* start, std::size_t size) :
@@ -165,7 +166,6 @@ template<class Source> bool InputStream<Source>::eof() const {
     return lastError == EndOfStream;
 }
 
-
 template<class Source>
 InputStream<Source> InputStream<Source>::slice(std::size_t start, std::size_t size) const requires IsSlicable<Source>{
     auto sliced = source.slice(start, size);
@@ -185,23 +185,6 @@ template<IsStreamReadable T> T InputStream<Source>::read() {
 }
 
 template<IsStreamReadable T, class Source>
-StreamRange<T, Source>::StreamRange(InputStream<Source>& stream) :
-    stream(&stream) { }
-
-template<IsStreamReadable T, class Source>
-auto StreamRange<T, Source>::begin() const {
-    static_assert(std::input_iterator<InputStreamIterator<T, Source>>);
-    static_assert(std::sentinel_for<std::default_sentinel_t, InputStreamIterator<T, Source>>);
-
-    return InputStreamIterator<T, Source>(*stream);
-}
-
-template<IsStreamReadable T, class Stream>
-auto StreamRange<T, Stream>::end() const {
-    return std::default_sentinel;
-}
-
-template<IsStreamReadable T, class Source>
 InputStreamIterator<T, Source>::InputStreamIterator(InputStream<Source>& stream) :
     stream(&stream) 
 {
@@ -209,12 +192,12 @@ InputStreamIterator<T, Source>::InputStreamIterator(InputStream<Source>& stream)
 };
 
 template<IsStreamReadable T, class Source>
-InputStreamIterator<T, Source>::reference InputStreamIterator<T, Source>::operator*() const {
+T InputStreamIterator<T, Source>::operator*() const {
     return readValue;
 }
 
 template<IsStreamReadable T, class Source>
-const InputStreamIterator<T, Source>::pointer InputStreamIterator<T, Source>::operator->() const {
+const T* InputStreamIterator<T, Source>::operator->() const {
     return &readValue;
 }
 

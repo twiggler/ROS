@@ -1,4 +1,4 @@
-#include <kernel/error.hpp>
+#include <kernel/panic.hpp>
 
 static FrameBufferInfo fb;
 
@@ -46,6 +46,11 @@ void panic(const char* message) {
         "cli;"
         "hlt;"
     );
+}
+
+
+extern "C" void abort() {
+    panic("Aborted");
 }
 
 void initializePanicHandler(FrameBufferInfo frameBufferInfo) {

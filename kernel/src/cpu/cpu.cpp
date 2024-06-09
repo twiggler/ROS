@@ -1,5 +1,5 @@
 #include <kernel/cpu.hpp>
-#include <kernel/error.hpp>
+#include <kernel/panic.hpp>
 #include <tuple>
 #include <kernel/cpu.hpp>
 
@@ -137,7 +137,7 @@ void Cpu::growStack(TableView addressSpace, std::size_t newSize, PageMapper& pag
 
     auto growth = (newSize - stackSize + 4_KiB - 1) & ~(4_KiB - 1);
     constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
-    auto error = pageMapper.allocateAndMapContiguous(addressSpace, stackTop - stackSize - growth, flags, growth / 4_KiB);
+    auto error = pageMapper.allocateAndMapRange(addressSpace, stackTop - stackSize - growth, flags, growth / 4_KiB);
     if (error) {
         panic("Cannot grow stack");
     }

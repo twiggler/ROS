@@ -4,6 +4,7 @@
 #include <libr/allocator.hpp>
 #include <libr/error.hpp>
 #include <libr/pointer.hpp>
+#include <libr/intrusive/list.hpp>
 #include <optional>
 #include <expected>
 
@@ -25,7 +26,9 @@ struct VirtualMemoryCategory : rlib::ErrorCategory {}
 inline constexpr virtualMemoryCategory = VirtualMemoryCategory{};
 
 inline constexpr auto OutOfPhysicalMemory = rlib::Error(-1, &virtualMemoryCategory);
-inline constexpr auto AlreadyMapped = rlib::Error(-2, &virtualMemoryCategory);
+inline constexpr auto VirtualRangeInUse = rlib::Error(-2, &virtualMemoryCategory);
+inline constexpr auto AlreadyMapped = rlib::Error(-3, &virtualMemoryCategory);
+inline constexpr auto OutOfBounds = rlib::Error(-4, &virtualMemoryCategory);
 
 struct Block {
     std::uintptr_t startAddress;
@@ -47,7 +50,8 @@ struct Block {
     Block resize(std::size_t newSize) const;
 };
 
-// Basic page frame allocator owning a stack of physical memory frames. 
+// Basic page frame allocator owning a stack of physical memory frames.
+// Requires a lot of memory, optimize. 
 class PageFrameAllocator {
 public:
     static std::optional<PageFrameAllocator> make(rlib::Allocator& allocator, std::size_t physicalMemory, std::size_t frameSize);
@@ -58,7 +62,7 @@ public:
 
     std::expected<Block, rlib::Error> alloc();
 
-    void dealloc(void* ptr);
+    void dealloc(std::uintptr_t physicalAddress);
 private:
     rlib::OwningPointer<std::uintptr_t[]> base;
     std::uintptr_t* top;
@@ -78,10 +82,10 @@ struct PageFlags {
     static constexpr auto All = Present | Writable | UserAccessible | HugePage | Global | NoExecute;
 };
 
-enum struct PageSize : std::uint8_t {
-    _4KiB = 1,
-    _2MiB = 2,
-    _1GiB = 3
+enum struct PageSize : std::uint32_t {
+    _4KiB = 4_KiB,
+    _2MiB = 2_MiB,
+    _1GiB = 1_GiB
 };
 
 class VirtualAddress {
@@ -163,15 +167,17 @@ public:
     
     std::optional<rlib::Error> map(TableView addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
     
-    std::size_t unmap(TableView addressSpace, VirtualAddress virtualAddress);
+    std::optional<Block> unmap(TableView addressSpace, VirtualAddress virtualAddress);
+
+    std::optional<Block> unmapAndDeallocate(TableView addressSpace, VirtualAddress virtualAddress);
     
     std::expected<PageFrame, rlib::Error> allocate();
        
     std::optional<rlib::Error> allocateAndMap(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags);
 
-    std::optional<rlib::Error> allocateAndMapContiguous(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
+    std::optional<rlib::Error> allocateAndMapRange(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames);
 
-    void shallowCopyMapping(TableView destAddressSpace, TableView sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress);
+    std::size_t unmapAndDeallocateRange(TableView addressSpace, VirtualAddress virtualAddress, std::size_t size);
     
     void relocate(std::uintptr_t newOffset);
 
@@ -182,6 +188,61 @@ private:
 
     std::uintptr_t offset;
     PageFrameAllocator frameAllocator;
+};
+
+class Region : rlib::intrusive::ListNode<Region> {
+public:
+    Region(VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlags::Type pageFlags, PageSize pageSize);
+
+    bool overlap(const Region& other) const;
+
+    std::optional<rlib::Error> mapPage(TableView tableLevel4, PageMapper& pageMapper, std::uint64_t physicalAddress, std::size_t pageIndex);
+
+    std::optional<rlib::Error> map(TableView tableLevel4, PageMapper& pageMapper);
+
+    VirtualAddress start() const;
+
+    VirtualAddress end() const;
+
+    std::size_t size() const;   
+
+private:
+    friend class rlib::intrusive::List<Region>;
+    friend class rlib::intrusive::ListIterator<Region>;
+    
+    std::size_t pageSizeInBytes() const;
+
+    VirtualAddress _start;
+    std::size_t sizeInFrames;
+    PageFlags::Type pageFlags;
+    PageSize _pageSize;
+};
+
+class AddressSpace {
+public:
+    static std::expected<AddressSpace, rlib::Error> make(PageMapper& pageMapper, rlib::Allocator& allocator);
+
+    explicit AddressSpace(PageMapper& pageMapper, TableView tableLevel4, rlib::Allocator& allocator);
+
+    std::expected<Region*, rlib::Error> reserve(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
+
+    std::expected<Region*, rlib::Error> allocate(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
+
+    std::optional<rlib::Error> mapPage(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames);
+    
+    std::uintptr_t pageDirectory() const;
+    
+    // TODO: Take a source "AddressSpace" to improve encapsulation.
+    void shallowCopyMapping(TableView from, VirtualAddress startAddress, VirtualAddress endAddress);
+    
+    ~AddressSpace();
+
+private:
+    PageMapper* pageMapper;
+    TableView tableLevel4;
+    // Is a custom allocator worth it, or can we get by with a generic kernel allocator?
+    rlib::Allocator* allocator;
+    rlib::intrusive::List<Region> regions;
 };
 
 }

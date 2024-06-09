@@ -1,5 +1,6 @@
 #include "kernel/paging.hpp"
 #include <utility>
+#include <algorithm>
 
 namespace Memory {
 
@@ -45,8 +46,8 @@ std::expected<Block, rlib::Error> PageFrameAllocator::alloc() {
     return Block{(*(--top)), frameSize };
 }
 
-void PageFrameAllocator::dealloc(void *ptr) {
-    *(top++) = reinterpret_cast<std::uintptr_t>(ptr);
+void PageFrameAllocator::dealloc(std::uintptr_t physicalAddress) {
+    *(top++) = physicalAddress;
 }
 
 VirtualAddress::VirtualAddress(std::uintptr_t address) :
@@ -202,56 +203,56 @@ std::optional<rlib::Error> PageMapper::map(TableView addressSpace, VirtualAddres
     return {};
 }
 
-std::size_t PageMapper::unmap(TableView addressSpace, VirtualAddress virtualAddress) {
+std::optional<Block> PageMapper::unmap(TableView addressSpace, VirtualAddress virtualAddress) {
     auto indexLevel4 = virtualAddress.indexLevel4();
     auto entryLevel4 = addressSpace.at(indexLevel4);
     if (!entryLevel4.isUsed()) {
-        return 0;
+        return {};
     }
 
     auto indexLevel3 = virtualAddress.indexLevel3();
     auto tableLevel3 = mapTableView(entryLevel4);
     auto entryLevel3 = tableLevel3.at(indexLevel3);
     if (!entryLevel3.isUsed()) {
-        return 0;
+        return {};
     }
     if (entryLevel3.flags() & PageFlags::HugePage) {
         entryLevel3.clear();
-        return 1_GiB;
+        return Block{entryLevel3.physicalAddress(), 1_GiB};
     }
 
     auto indexLevel2 = virtualAddress.indexLevel2();
     auto tableLevel2 = mapTableView(entryLevel3);
     auto entryLevel2 = tableLevel2.at(indexLevel2);
     if (!entryLevel2.isUsed()) {
-        return 0; 
+        return {}; 
     }
     if (entryLevel2.flags() & PageFlags::HugePage) {
         entryLevel2.clear();
-        return 2_MiB;
+        return Block{entryLevel2.physicalAddress(), 2_MiB};
     }
 
     auto indexLevel1 = virtualAddress.indexLevel1();
     auto tableLevel1 = mapTableView(entryLevel2);
     auto entryLevel1 = tableLevel1.at(indexLevel1);
     if (!entryLevel1.isUsed()) {
-        return 0; 
+        return {}; 
     }
 
     entryLevel1.clear();
-    return 4_KiB;
+    return Block(entryLevel1.physicalAddress(), 4_KiB);
 }
 
-void PageMapper::shallowCopyMapping(TableView destAddressSpace, TableView sourceAddressSpace, VirtualAddress startAddress, VirtualAddress endAddress) {
-    auto startIndex = startAddress.indexLevel4();
-    auto endIndex = endAddress.indexLevel4();
-    if (startIndex > endIndex) {
-        std::swap(startIndex, endIndex);
+std::optional<Block> PageMapper::unmapAndDeallocate(TableView addressSpace, VirtualAddress virtualAddress) {
+    auto block = unmap(addressSpace, virtualAddress);
+    if (!block) {
+        return {};
     }
-    
-    for (auto i = startIndex; i <= endIndex; i++) {
-        destAddressSpace.at(i) = sourceAddressSpace.at(i);
+
+    for (auto i = std::size_t(0); i < block->size; i += 4_KiB) {
+        frameAllocator.dealloc(block->startAddress + i);
     }
+    return block;
 }
 
 std::expected<PageFrame, rlib::Error> PageMapper::allocate() {
@@ -272,7 +273,7 @@ std::optional<rlib::Error> PageMapper::allocateAndMap(TableView addressSpace, Vi
     return map(addressSpace, virtualAddress, block->startAddress, PageSize::_4KiB, flags);
 }
 
-std::optional<rlib::Error> PageMapper::allocateAndMapContiguous(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
+std::optional<rlib::Error> PageMapper::allocateAndMapRange(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags, std::size_t nFrames) {
     for (auto i = std::size_t(0); i < nFrames; i++) {
         auto error = allocateAndMap(addressSpace, virtualAddress + i * 4_KiB, flags);
         if (error) {
@@ -281,6 +282,20 @@ std::optional<rlib::Error> PageMapper::allocateAndMapContiguous(TableView addres
     }
     
     return {};
+}
+
+std::size_t PageMapper::unmapAndDeallocateRange(TableView addressSpace, VirtualAddress virtualAddress, std::size_t size) {
+    auto freed = std::size_t(0);
+
+    while (freed < size) {
+        auto block = unmapAndDeallocate(addressSpace, virtualAddress + freed);
+        if (!block) {
+            return freed;
+        }
+        freed += block->size;
+    }
+
+    return freed;
 }
 
 void PageMapper::relocate(std::uintptr_t newOffset) {
@@ -306,6 +321,116 @@ std::expected<TableView, rlib::Error> PageMapper::ensurePageTable(TableEntryView
 
 TableView PageMapper::mapTableView(TableEntryView entry) const {
     return mapTableView(entry.physicalAddress());
+}
+
+Region::Region(VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlags::Type pageFlags, PageSize pageSize) :
+    _start(virtualAddress), sizeInFrames(sizeInFrames), pageFlags(pageFlags), _pageSize(pageSize) {}
+
+bool Region::overlap(const Region& other) const {
+    return _start < other.end() && end() > other._start;
+}
+
+std::optional<rlib::Error> Region::mapPage(TableView tableLevel4, PageMapper& pageMapper, std::uint64_t physicalAddress, std::size_t pageIndex) {
+    if (pageIndex > sizeInFrames) {
+        return OutOfBounds;
+    }
+
+    auto offset = pageIndex * pageSizeInBytes();
+    return pageMapper.map(tableLevel4, _start + offset, physicalAddress, _pageSize, pageFlags);
+}
+
+std::optional<rlib::Error> Region::map(TableView tableLevel4, PageMapper& pageMapper) {
+    return pageMapper.allocateAndMapRange(tableLevel4, _start, pageFlags, sizeInFrames);
+}
+
+VirtualAddress Region::start() const {
+    return _start;
+}
+
+VirtualAddress Region::end() const {
+    return _start + size();
+}
+
+std::size_t Region::size() const {
+    return sizeInFrames * pageSizeInBytes();
+}
+
+std::size_t Region::pageSizeInBytes() const {
+    return static_cast<std::uint32_t>(_pageSize);
+};
+
+std::expected<AddressSpace, rlib::Error> AddressSpace::make(PageMapper& pageMapper, rlib::Allocator& allocator) {
+    auto tableLevel4 = pageMapper.createPageTable();
+    if (!tableLevel4) {
+        return std::unexpected(tableLevel4.error());
+    }
+
+    return AddressSpace(pageMapper, *tableLevel4, allocator);    
+}
+
+AddressSpace::AddressSpace(PageMapper& pageMapper, TableView tableLevel4, rlib::Allocator& allocator) :
+    pageMapper(&pageMapper), tableLevel4(tableLevel4), allocator(&allocator) {}
+
+std::expected<Region*, rlib::Error> AddressSpace::reserve(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize) {
+    auto pageSizeInBytes = static_cast<std::uint32_t>(pageSize); 
+    auto sizeInFrames = (size + pageSizeInBytes - 1) / pageSizeInBytes;
+    auto region = Region(start, sizeInFrames, flags, pageSize);
+
+    // This has a complexity of O(n). Optimize using balanced tree or skip list.
+    if (std::ranges::any_of(regions, [&region](const auto& other) { return region.overlap(other); })) {
+        return std::unexpected(VirtualRangeInUse);
+    }
+
+    auto regionPtr = rlib::constructRaw<Region>(*allocator, region);
+    if (regionPtr == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+
+    regions.push_front(*regionPtr);
+    return regionPtr;
+}
+
+std::expected<Region*, rlib::Error> AddressSpace::allocate(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize) {
+    auto region = reserve(start, size, flags, pageSize);
+    if (region == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+
+    auto error = region.value()->map(tableLevel4, *pageMapper);
+    if (error) {
+        return std::unexpected(*error);
+    }
+
+    return region;
+}
+
+std::optional<rlib::Error> AddressSpace::mapPage(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames) {
+    return region.mapPage(tableLevel4, *pageMapper, physicalAddress, offsetInFrames);
+}
+
+AddressSpace::~AddressSpace() {
+    auto region = regions.pop_front();
+    while (region != nullptr) {
+        pageMapper->unmapAndDeallocateRange(tableLevel4, region->start(), region->size());
+        destruct(region, *allocator);
+        region = regions.pop_front();
+    }
+}
+
+std::uintptr_t AddressSpace::pageDirectory() const {
+    return tableLevel4.physicalAddress();
+}
+
+void AddressSpace::shallowCopyMapping(TableView from, VirtualAddress startAddress, VirtualAddress endAddress) {
+    auto startIndex = startAddress.indexLevel4();
+    auto endIndex = endAddress.indexLevel4();
+    if (startIndex > endIndex) {
+        std::swap(startIndex, endIndex);
+    }
+    
+    for (auto i = startIndex; i <= endIndex; i++) {
+        tableLevel4.at(i) = from.at(i);
+    }
 }
 
 } // namespace Memory

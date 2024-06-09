@@ -1,5 +1,5 @@
 #include "kernel/kernel.hpp"
-#include <kernel/error.hpp>
+#include <kernel/panic.hpp>
 #include <libr/ustar.hpp>
 
 using namespace Memory;
@@ -49,13 +49,13 @@ std::optional<rlib::Error> Kernel::loadProcess(rlib::InputStream<rlib::MemorySou
         return parsedElf.error();
     }
 
-    auto processAddressSpace = pageMapper.createPageTable();
+    auto processAddressSpace = AddressSpace::make(pageMapper, allocator);
     if (!processAddressSpace) {
-        return CannotCreateAddressSpace;
+        return processAddressSpace.error();
     }
     
     // Map kernel into process address space.
-    pageMapper.shallowCopyMapping(*processAddressSpace, addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF));
+    processAddressSpace->shallowCopyMapping(addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF));
 
     for (const auto& segment : parsedElf->segments) {
         if (segment.type != Elf::Segment::Type::Load) {
@@ -74,26 +74,31 @@ std::optional<rlib::Error> Kernel::loadProcess(rlib::InputStream<rlib::MemorySou
                 flags |= PageFlags::Writable;
             } 
         }
-        
+        auto region = processAddressSpace->reserve(segment.virtualAddress, segment.fileSize, flags, PageSize::_4KiB);
+        if (region == nullptr) {
+            return OutOfPhysicalMemory;
+        }
+
         elfStream.seek(segment.fileOffset);
         auto segmentStreamRange = StreamRange<std::byte, MemorySource>(elfStream) | std::views::take(segment.fileSize);
         // Copy in chunks of 4_KiB so that we only need to map one page in the kernel address space at a time.
+        auto pageIndex = std::size_t(0);
         for (auto chunk : segmentStreamRange | std::views::chunk(4_KiB)) {
-            // TODO: track allocations in the address space so we can free them on destruction. 
-            auto region = pageMapper.allocate();
-            if (!region) {
-                return OutOfPhysicalMemory;
+            auto frame = pageMapper.allocate();
+            if (!frame) {
+                return frame.error();
             }
-            auto destination = reinterpret_cast<std::byte*>(region->ptr);
+            auto destination = reinterpret_cast<std::byte*>(frame->ptr);
             auto copyResult = std::ranges::copy(chunk, destination);
             if (static_cast<std::size_t>(copyResult.out - destination) < segment.fileSize) {
                 return CannotCopySegment;
             }
             // Map the region into the process address space.
-            auto error = pageMapper.map(*processAddressSpace, segment.virtualAddress, region->physicalAddress, PageSize::_4KiB, flags);
+            auto error = processAddressSpace->mapPage(**region, frame->physicalAddress, pageIndex);
             if (error) {
                 return CannotMapProcessMemory;
             }
+            pageIndex++;
             // TODO: Allocate more pages and initialize to zero if memorySize > fileSize.
             // Using std::views::repeat along with std::views::concat would be sweet.
             // Unfortunately, concat is not there yet (c++26)
@@ -104,12 +109,12 @@ std::optional<rlib::Error> Kernel::loadProcess(rlib::InputStream<rlib::MemorySou
     constexpr auto stackSize = 64_KiB;
     constexpr auto stackBottom = 0x8000'0000'0000 - stackSize;
     constexpr auto stackFlags = PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible | PageFlags::NoExecute;
-    auto error = pageMapper.allocateAndMapContiguous(*processAddressSpace, stackBottom, stackFlags, stackSize / 4_KiB);
-    if (error) {
-        return *error;
+    auto error = processAddressSpace->allocate(stackBottom, stackSize, stackFlags, PageSize::_4KiB);
+    if (error == nullptr) {
+        return OutOfPhysicalMemory;
     }
 
-    auto contextId = cpu->createContext(processAddressSpace->physicalAddress(), parsedElf->startAddress, stackBottom + stackSize, reinterpret_cast<std::uintptr_t>(framebuffer));
+    auto contextId = cpu->createContext(processAddressSpace->pageDirectory(), parsedElf->startAddress, stackBottom + stackSize, reinterpret_cast<std::uintptr_t>(framebuffer));
     cpu->switchContext(contextId);
 
     return {};
