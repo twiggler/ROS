@@ -8,66 +8,83 @@ struct ListNode {
     T* prev;
 };
 
-template <typename T>
+
+template<class T>
+struct NodeFromBase {
+    static ListNode<T>& get(T* element) { return *element; }
+};
+
+template <class T, ListNode<T> T::*Node>
+struct NodeFromMember {
+    static ListNode<T>& get(T* element) {
+        return element->*Node;
+    }
+};
+
+template <typename T, class NodeGetter = NodeFromBase<T>>
 class ListIterator {
 public:
     using value_type = T;
     using difference_type = std::ptrdiff_t;
 
-    ListIterator() : node(nullptr) {}
+    ListIterator() : element(nullptr) {}
     
-    explicit ListIterator(T* node) : node(node) {}
+    explicit ListIterator(T* node) : element(node) {}
 
-    const T& operator*() const { return *node; }
+    const T& operator*() const { return *element; }
     
-    const T* operator->() const { return node; }
+    const T* operator->() const { return element; }
 
     ListIterator& operator++() {
-        node = node->next;
+        element = NodeGetter::get(element).next;
         return *this;
     }
 
     ListIterator& operator--() {
-        node = node->prev;
+        element = NodeGetter::get(element).prev;
         return *this;
     }
 
     ListIterator operator++(int) {
         auto current = ListIterator(*this);
-        node = node->next;
+        element = NodeGetter::get(element).next;
 
         return current;
     }
 
     ListIterator operator--(int) {
         auto current = ListIterator(*this);
-        node = node->previous;
+        element = NodeGetter::get(element).previous;
 
         return current;
     }
 
     bool operator==(const ListIterator& other) const {
-        return node == other.node;
+        return element == other.element;
     }
 
 private:
-    T* node;
+    T* element;
 };
 
-template <typename T>
+template <typename T, class NodeGetter = NodeFromBase<T>>
 class List {
 public:
     List() : head(nullptr), tail(nullptr) {}
 
-    void push_front(T& node) {
-        node.next = head;
-        node.prev = nullptr;
+    List(List&& other) : head(other.head), tail(other.tail) {
+        other.head = other.tail = nullptr;
+    }
+
+    void push_front(T& element) {
+        NodeGetter::get(&element).next = head;
+        NodeGetter::get(&element).prev = nullptr;
         if (head != nullptr) {
-            head->prev = &node;
+            NodeGetter::get(head).prev = &element;
         } else {
-            tail = &node;
+            tail = &element;
         }
-        head = &node;
+        head = &element;
     }
 
     T* pop_front() {
@@ -75,17 +92,42 @@ public:
             return nullptr;
         }
         
-        auto node = head;
-        head = node->next;
+        auto element = head;
+        head = NodeGetter::get(element).next;
         
         if (head != nullptr) {
-            head->prev = nullptr;
+            NodeGetter::get(head).prev = nullptr;
         } else {
             tail = nullptr;
         }
         
-        node->next = node->prev = nullptr;
-        return node;
+        NodeGetter::get(element).next = NodeGetter::get(element).prev = nullptr;
+        return element;
+    }
+
+    void remove(T& element) {
+        if (head == nullptr) {
+            return;
+        }
+
+        if (&element == head) {
+            head = NodeGetter::get(head).next;
+            if (head != nullptr) {
+                NodeGetter::get(head).prev = nullptr;
+            }
+        } else if (&element == tail) {
+            tail = NodeGetter::get(tail).prev;
+            if (tail != nullptr) {
+                NodeGetter::get(tail).next = nullptr;
+            }
+        } else {
+            auto next = NodeGetter::get(&element).next;
+            auto prev = NodeGetter::get(&element).prev;
+            NodeGetter::get(prev).next = next;
+            NodeGetter::get(next).prev = prev;
+        }
+
+        NodeGetter::get(&element).next = NodeGetter::get(&element).prev = nullptr;
     }
 
     ListIterator<T> begin() {

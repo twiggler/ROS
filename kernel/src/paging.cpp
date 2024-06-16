@@ -2,8 +2,6 @@
 #include <utility>
 #include <algorithm>
 
-namespace Memory {
-
 Block Block::align(std::size_t alignment) const {
     auto alignmentMask = alignment - 1;
     auto alignedStartAddress = (startAddress + alignmentMask) & ~alignmentMask;
@@ -417,7 +415,7 @@ AddressSpace::~AddressSpace() {
     }
 }
 
-std::uintptr_t AddressSpace::pageDirectory() const {
+std::uintptr_t AddressSpace::pageDirectoryPhysicalAddress() const {
     return tableLevel4.physicalAddress();
 }
 
@@ -432,5 +430,3 @@ void AddressSpace::shallowCopyMapping(TableView from, VirtualAddress startAddres
         tableLevel4.at(i) = from.at(i);
     }
 }
-
-} // namespace Memory

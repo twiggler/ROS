@@ -15,22 +15,37 @@ inline constexpr auto InvalidSegmentSize = rlib::Error{-3, &kernelErrorCategory}
 inline constexpr auto CannotMapProcessMemory = rlib::Error{-4, &kernelErrorCategory};
 inline constexpr auto CannotCopySegment = rlib::Error{-5, &kernelErrorCategory};
 
-class Kernel {
+struct HardwareInterrupt {
+    std::uint8_t IRQ;
+};
+
+struct Message {
+    Thread* sender;
+};
+
+class Kernel : public CpuObserver {
 public:
     // Design: Type erase allocator?
-    Kernel(Memory::TableView addressSpace, Memory::PageMapper pageMapper, Cpu& cpu, rlib::BumpAllocator allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
+    Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, rlib::BumpAllocator allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
 
     void run();
+
+    virtual void onInterrupt(std::uint8_t Irq) final;
+
+    virtual void onSyscall(Thread* sender) final;
 
 private:
     // TODO: Implement type erased InputStream
     std::optional<rlib::Error> loadProcess(rlib::InputStream<rlib::MemorySource>& process);    
 
-    Memory::TableView           addressSpace; 
-    Memory::PageMapper          pageMapper;
+    TableView                   addressSpace; 
+    PageMapper                  pageMapper;
     Cpu*                        cpu;
     rlib::BumpAllocator         allocator;
     std::uint32_t*              framebuffer;  
+    rlib::RingBuffer<Message, 256> mailbox; // This supports only a single producer i.e. core
+    rlib::RingBuffer<HardwareInterrupt, 256> interrupts;
+    Thread*                     service;
 };
 
 

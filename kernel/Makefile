@@ -1,4 +1,4 @@
-CPPFLAGS = -g -std=c++23 -Wall -fpic -ffreestanding -fno-stack-protector -fno-exceptions -fno-rtti -nostdlib -mno-red-zone -mgeneral-regs-only \
+CPPFLAGS = -g -std=c++23 -Wall -Wextra -pedantic-errors -fpic -ffreestanding -fno-stack-protector -fno-exceptions -fno-rtti -nostdlib -mno-red-zone -mgeneral-regs-only \
 		-fconcepts-diagnostics-depth=5 \
 		-I./bootboot/dist/ -I../libr/include -I./include
 LDFLAGS = -g -nostdlib -L ../libr/build

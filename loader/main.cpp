@@ -20,8 +20,6 @@ extern std::uint32_t fb;                // linear framebuffer mapped
 
 constexpr std::size_t frameSize = 1024 * 4;
 
-using namespace Memory;
-
 FrameBufferInfo getFrameBufferInfo() {
     return {
         &fb,
@@ -33,7 +31,7 @@ FrameBufferInfo getFrameBufferInfo() {
 }
 
 template <typename R>
-concept BlockRange = std::ranges::forward_range<R> && std::same_as<std::ranges::range_value_t<R>, Memory::Block>;
+concept BlockRange = std::ranges::forward_range<R> && std::same_as<std::ranges::range_value_t<R>, Block>;
 
 // The OneShotAllocator is a simple allocator that can only allocate once. 
 // It solves the chicken-and-egg problem of needing an allocator to allocate storage for the page frame allocator.
@@ -47,7 +45,7 @@ class OneShotAllocator : public rlib::Allocator {
             // TODO: restrict to first 16GB
     }
 public:
-    explicit OneShotAllocator(std::span<const MMapEnt> memoryMap) : 
+    explicit OneShotAllocator(std::span<MMapEnt> memoryMap) : 
         memoryMap(std::move(memoryMap)),
         allocatedBlock(Block{0, 0}) { }
 
@@ -85,7 +83,7 @@ private:
         // NOOP        
     }
 
-    std::span<const MMapEnt> memoryMap;
+    std::span<MMapEnt> memoryMap;
     Block allocatedBlock;
 };
 
@@ -159,7 +157,8 @@ Kernel makeKernel() {
     auto heapStart = patchMemoryLayout(tableLevel4, pageMapper, physicalMemory);
     auto allocator = makeHeap(tableLevel4, pageMapper, heapStart, 4);
     
-    auto& cpu = Cpu::makeCpu(allocator, 0xffffffff'ffffffff, 4_KiB);
+    // Stack size should correspond to value in linker script "link.ld".
+    auto& cpu = Cpu::makeCpu(allocator, 0xffffffff'ffffffff, 16_KiB);
 
     auto memorySource = rlib::MemorySource(reinterpret_cast<std::byte*>(bootboot.initrd_ptr), bootboot.initrd_size);
     auto inputStream = rlib::InputStream(std::move(memorySource));

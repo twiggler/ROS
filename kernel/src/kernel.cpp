@@ -2,7 +2,6 @@
 #include <kernel/panic.hpp>
 #include <libr/ustar.hpp>
 
-using namespace Memory;
 using namespace rlib;
 
 Kernel::Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, BumpAllocator allocator, InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer) :
@@ -23,23 +22,25 @@ Kernel::Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, BumpAllo
 
 void Kernel::run() {
     HardwareInterrupt interruptBuffer[Cpu::InterruptBufferSize];
-    cpu->enableInterrupts();
+    Message messageBuffer[Cpu::MessageBufferSize];
+    cpu->registerObserver(*this);
+    cpu->scheduleThread(*service);
 
     while (true) {
-        auto end = cpu->consumeInterrupts(interruptBuffer);
-        if (end == interruptBuffer) {
-            cpu->halt();
-            continue;
-        } 
-
-        // Remove this when keyboard driver is implemented.
-        for (auto interrupt = interruptBuffer; interrupt != end; interrupt++) {
+        auto interruptEnd = interrupts.popAll(interruptBuffer);
+        // Process Interrupts.
+        for (auto interrupt = interruptBuffer; interrupt != interruptEnd; interrupt++) {
+             // Remove this when keyboard driver is implemented.
             if (interrupt->IRQ == 1) {
                 panic("Key pressed");
             } 
         }
 
-        // Process Interrupts.
+        auto messageEnd = mailbox.popAll(messageBuffer);
+        for (auto message = messageBuffer; message != messageEnd; message++) {
+            // Every message is a kill-thread message
+            cpu->killThread(allocator, *message->sender);    
+        }
     }
 }
 
@@ -105,17 +106,25 @@ std::optional<rlib::Error> Kernel::loadProcess(rlib::InputStream<rlib::MemorySou
         }
     }
 
-    // Elf file should not put segments here. Perhaps allocate a region dynamically.
-    constexpr auto stackSize = 64_KiB;
-    constexpr auto stackBottom = 0x8000'0000'0000 - stackSize;
-    constexpr auto stackFlags = PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible | PageFlags::NoExecute;
-    auto error = processAddressSpace->allocate(stackBottom, stackSize, stackFlags, PageSize::_4KiB);
-    if (error == nullptr) {
-        return OutOfPhysicalMemory;
+    auto thread = cpu->createThread(allocator, std::move(*processAddressSpace), parsedElf->startAddress, 64_KiB, Context::Flags::Type(0));
+    if (!thread) {
+        panic("Cannot create service thread");
     }
-
-    auto contextId = cpu->createContext(processAddressSpace->pageDirectory(), parsedElf->startAddress, stackBottom + stackSize, reinterpret_cast<std::uintptr_t>(framebuffer));
-    cpu->switchContext(contextId);
+    service = *thread;
 
     return {};
+}
+
+void Kernel::onInterrupt(std::uint8_t Irq) {
+    auto result = interrupts.push(HardwareInterrupt{Irq});
+    if (!result) {
+        panic("Interrupt buffer overflow");
+    }
+}
+
+void Kernel::onSyscall(Thread* sender) {
+    auto result = mailbox.push(Message{sender});
+    if (!result) {
+        panic("Message buffer overflow");
+    }
 }

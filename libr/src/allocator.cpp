@@ -1,5 +1,5 @@
 #include <libr/allocator.hpp>
-#include <memory>
+#include <cstdint>
 
 namespace rlib { 
 
@@ -12,7 +12,7 @@ void Allocator::deallocate(void *p, std::size_t bytes, std::size_t alignment) {
 }
 
 BumpAllocator::BumpAllocator(void* buffer, std::size_t size) :
-    buffer(buffer), available(size) { }
+    buffer(reinterpret_cast<std::byte*>(buffer)), available(size) { }
 
 BumpAllocator::BumpAllocator(BumpAllocator&& other) :
     buffer(other.buffer),
@@ -24,14 +24,20 @@ BumpAllocator::BumpAllocator(BumpAllocator&& other) :
 
 
 void *BumpAllocator::do_allocate(std::size_t bytes, std::size_t alignment) {
-    auto p = std::align(alignment, bytes, buffer, available);
-    if (p == nullptr) {
+    if (available < bytes) {
         return nullptr;
     }
 
-    buffer = reinterpret_cast<char*>(buffer) + bytes;
-    available -= bytes;
-    return p;
+    auto base = reinterpret_cast<std::uintptr_t>(buffer);
+    auto aligned = (base + alignment - 1) & -alignment;
+    auto diff = aligned - base;
+    if (diff + bytes > available) {
+        return nullptr;
+    }
+
+    available -= bytes + diff;
+    buffer += bytes + diff;
+    return reinterpret_cast<void*>(aligned);
 }
 
 void BumpAllocator::do_deallocate(void *p, std::size_t bytes, std::size_t alignment) {

@@ -1,31 +1,26 @@
 ; As long as we do not have our own linker, add a GNU-stack note to make "ld" shup up.
 section .note.GNU-stack noalloc noexec nowrite progbits
 
+FlagsKernelMode         equ     1
+
 struc Context
-    .cp3    resq    1 ; Control processor register
-    .rip    resq    1 ; Instruction pointer
-    .rsp    resq    1 ; Stack pointer
-    .rax    resq    1 ; General purpose registers
-    .rbx    resq    1
-    .rcx    resq    1
-    .rdx    resq    1
-    .rsi    resq    1
-    .rdi    resq    1
-    .rbp    resq    1
-    .r8     resq    1
-    .r9     resq    1
-    .r10    resq    1
-    .r11    resq    1
-    .r12    resq    1
-    .r13    resq    1
-    .r14    resq    1
-    .r15    resq    1
+    .rflags             resq    1 ; RFLAGS register
+    .cr3                resq    1 ; Control processor register
+    .rip                resq    1 ; Instruction pointer
+    .rbx                resq    1
+    .rsp                resq    1 ; Stack pointer
+    .rbp                resq    1
+    .r12                resq    1
+    .r13                resq    1
+    .r14                resq    1
+    .r15                resq    1
+    .flags              resw    1 ; Context flags
 endstruc
 
-section .bss
-
-; We only store the context of a single task for now
-contextInstance resb Context_size
+struc Core
+    .kernelStack        resq    1
+    .activeContext      resq    1 
+endstruc
 
 section .text
 
@@ -33,8 +28,10 @@ global setGdt
 global setIdt
 global notifyEndOfInterrupt
 global initializePIC
-global createContext
 global switchContext
+global setupSyscallHandler
+
+extern systemCallHandler
 
 MasterPicCommandPort    equ     0x20
 MasterPicDataPort       equ     MasterPicCommandPort + 1
@@ -45,17 +42,16 @@ PicCommandInit          equ     0x11
 PicCommandReadISR       equ     0x0b
 ICW4_8086               equ     0x01
 
-; rdi:  gdt limit 
+; di:  gdt limit 
 ; rsi:  gdt base
-; dx:  code segment descriptor index
-; cx:  data segment descriptor index
-; r8:  task segment descriptor index  
+; dx:   code segment descriptor index
+; cx:   task segment descriptor index  
 setGdt:
     push    rbp
     mov     rbp, rsp
     sub     rsp, 2 + 8
 
-    dec     rdi ; Size minus 1
+    dec     di      ; Size minus 1
     mov     [rbp-10], di
     mov     [rbp-8], rsi
     lgdt    [rbp-10]
@@ -67,16 +63,15 @@ setGdt:
     push    rax
     retfq
 .reloadCS:
-    shl     cx, 3
-    mov     ds, cx
-    mov     es, cx
-    mov     fs, cx
-    mov     gs, cx
-    mov     ss, cx
+    add     dx, 8
+    mov     ds, dx
+    mov     es, dx
+    mov     fs, dx
+    mov     ss, dx
 
     ; Load task register
-    shl     r8w, 3
-    ltr     r8w
+    shl     cx, 3
+    ltr     cx
 
     mov     rsp, rbp
     pop     rbp
@@ -164,29 +159,105 @@ notifyEndOfInterrupt:
     xor     rax, rax
     ret
 
-; rdi:  cp3
-; rsi:  rip
-; rdx:  rsp
-; rcx:  arg1 passed to main
-createContext:
-    mov     [contextInstance + Context.cp3], rdi
-    mov     [contextInstance + Context.rip], rsi
-    mov     [contextInstance + Context.rsp], rdx
-    mov     [contextInstance + Context.rdi], rcx    ; first argument to main
-
-    mov     eax, 1  ; Return context id
-    ret
-
-; rdi = context id
+; rdi: target context
 switchContext:
-    ; This will become the syscall handler.
-    ; For now, this routine is used to test the elf loader.
-    mov     rax, [contextInstance + Context.cp3]
+    ; save active context
+    mov     rsi, qword [gs:Core.activeContext]
+    mov     rax, cr3
+    mov     [rsi + Context.cr3], rax
+    pop     qword [rsi + Context.rip]   ; We are jumping out of this function
+    or      qword [rsi + Context.flags], FlagsKernelMode      
+    mov     [rsi + Context.rbx], rbx
+    mov     [rsi + Context.rsp], rsp
+    mov     [rsi + Context.rbp], rbp
+    mov     [rsi + Context.r12], r12
+    mov     [rsi + Context.r13], r13
+    mov     [rsi + Context.r14], r14
+    mov     [rsi + Context.r15], r15
+
+    jmp     loadContext
+
+
+; rdi: target context
+loadContext:
+    mov     qword [gs:Core.activeContext], rdi
+
+    mov     rbx, [rdi + Context.rbx]
+    mov     rbp, [rdi + Context.rbp]
+    mov     r12, [rdi + Context.r12]
+    mov     r13, [rdi + Context.r13]
+    mov     r14, [rdi + Context.r14]
+    mov     r15, [rdi + Context.r15]
+    mov     rsp, [rdi + Context.rsp]
+    mov     rbp, [rdi + Context.rbp]
+    mov     rax, [rdi + Context.cr3]
     mov     cr3, rax
-    mov     rsp, [contextInstance + Context.rsp]
-    mov     rdi, [contextInstance + Context.rdi]
+
+    test    dword [rdi + Context.flags], FlagsKernelMode
+    jz      .return_to_user_mode
+    ; Stay in kernel mode
+    jmp     [rdi + Context.rip]
+
+.return_to_user_mode:
+    mov     rcx, [rdi + Context.rip]
+    mov     r11, [rdi + Context.rflags]
+    o64 sysret
+
+
+systemCallThunk:
+    mov     rdi, qword [gs:Core.activeContext]
+    and     dword [rdi + Context.flags], !FlagsKernelMode
+    mov     [rdi + Context.rflags], r11
+    mov     [rdi + Context.rbx], rbx
+    mov     [rdi + Context.rbp], rbp
+    mov     [rdi + Context.rsp], rsp
+    mov     [rdi + Context.r12], r12
+    mov     [rdi + Context.r13], r13
+    mov     [rdi + Context.r14], r14
+    mov     [rdi + Context.r15], r15
+
+    mov     rsp, qword [gs:Core.kernelStack]
+    call    systemCallHandler
+
+    mov     rdi, rax
+    jmp     loadContext
+
+; di kernel mode code segment descriptor index
+; si user mode code segment descriptor index
+; rdx core specific kernel data
+setupSyscallHandler:
+    push    rdx                     ; Save core specific data
+
+    mov     ecx, 0xC0000081         ; IA32_STAR MSR address
+    xor     edx, edx
+    xor     eax, eax
+    mov     dx, di                  ; Put kernel mode code segment index in IA32_STAR[47:32]
+    dec     esi                     ; Sysret offsets by one selector for ss and two for cs 
+    shl     esi, 16
+    or      edx, esi                ; Put user mode code segment index in IA32_STAR[63:48]
+    shl     edx, 3                  ; Convert indices into segment selectors
+    wrmsr
+
+    mov     ecx, 0xC0000082         ; IA32_LSTAR MSR address
+    lea     rax, [systemCallThunk]  ; Address of syscall handler
+    mov     rdx, rax
+    shr     rdx, 32
+    wrmsr                           ; Write to IA32_LSTAR
+
+    ; SECURITY RISK - EVALUATE
+    mov     ecx, 0xC0000084         ; IA32_FMASK MSR address
+    xor     edx, edx                ; We do not mask any flags -- for now
+    wrmsr                           ; Write to IA32_FMASK
     
-    ; Note that we are still in ring 0.
-    jmp     [contextInstance + Context.rip]
+    mov     ecx, 0xC0000080         ; IA32_EFER MSR address
+    rdmsr                           
+    or      eax, 0x1                ; Set SCE bit
+    wrmsr                           ; Write to IA32_EFER
 
-
+    pop     rdx                     ; Restore core specific data
+    mov     ecx, 0xC0000101         ; Address of IA32_GS_BASE MSR
+    mov     eax, edx                
+    shr     rdx, 32                 
+    wrmsr                           ; Write to IA32_GS_BASE
+    
+    ret

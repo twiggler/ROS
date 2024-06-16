@@ -29,7 +29,7 @@ namespace rlib {
         BumpAllocator& operator= (const BumpAllocator&) = delete;
         
     private:
-        void*       buffer;
+        std::byte*  buffer;
         std::size_t available;
 
         virtual void* do_allocate(std::size_t bytes, std::size_t alignment = alignof(std::max_align_t)) final;

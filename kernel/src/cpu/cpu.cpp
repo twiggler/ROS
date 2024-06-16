@@ -2,10 +2,9 @@
 #include <kernel/panic.hpp>
 #include <tuple>
 #include <kernel/cpu.hpp>
+#include <libr/allocator.hpp>
 
-using namespace Memory;
-
-extern "C" void setGdt(std::uint16_t size, std::uint64_t* base, std::uint16_t codeSegment, std::uint16_t dataSegment, std::uint16_t tssSegment);
+extern "C" void setGdt(std::uint16_t size, std::uint64_t* base, std::uint16_t codeSegmentIndex, std::uint16_t tssSegmentIndex);
 
 extern "C" void setIdt(std::uint16_t size, IdtDescriptor* base);
 
@@ -13,9 +12,9 @@ extern "C" void initializePIC(std::uint8_t masterVectorOffset, std::uint8_t slav
 
 extern "C" bool notifyEndOfInterrupt(std::uint8_t IRQ);
 
-extern "C" std::uint64_t createContext(uintptr_t cr3, std::uint64_t entryPoint, std::uint64_t stackTop, std::uint64_t arg1);
+extern "C" void setupSyscallHandler(std::uint16_t kernelCodeSegmentIndex, std::uint16_t userCodeSegmentIndex, Core* core);
 
-extern "C" void switchContext(std::uint64_t contextId);
+extern "C" void switchContext(Context* context);
 
 struct GdtAccess {
     using Type = std::uint8_t;
@@ -34,6 +33,16 @@ struct InterruptFrame {
     std::uint64_t rsp;
     std::uint64_t ss;
 };
+
+Thread::Thread(Context context, AddressSpace addressSpace) :
+        context(std::move(context)), 
+        addressSpace(std::move(addressSpace)) {}
+
+Thread* Thread::fromContext(Context& context) {
+    static_assert(offsetof(Thread, context) == 0);
+
+    return reinterpret_cast<Thread*>(&context);
+}
 
 constexpr std::uint64_t makeSegmentDescriptor(GdtAccess::Type access) {
     auto entry = std::uint64_t(access) << 40; 
@@ -74,7 +83,7 @@ constexpr IdtDescriptor makeGateDescriptor(std::uintptr_t isrAddress, std::uint1
 }
 
 
- __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame *frame, std::uint64_t errorCode) {
+ __attribute__((interrupt)) void doubleFaultHandler(InterruptFrame*, std::uint64_t errorCode) {
     // In response to a double fault we should abort.
     panic("Double fault");
 };
@@ -82,9 +91,8 @@ constexpr IdtDescriptor makeGateDescriptor(std::uintptr_t isrAddress, std::uint1
 template<std::uint8_t Irq>
 __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame*) {
     auto& cpu = Cpu::getInstance();
-    auto result = cpu.interruptBuffer.push({ Irq });
-    if (!result) {
-        panic("Interrupt buffer overflow");
+    if (cpu.observer != nullptr) {
+        cpu.observer->onInterrupt(Irq);
     }
 
     auto spurious = notifyEndOfInterrupt(Irq);
@@ -97,13 +105,15 @@ Cpu::Cpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackS
     stackTop(stackTop),
     stackSize(stackSize),
     gdt{ 0 },
-    idt{ 0 },
+    idt{ { 0, 0 } },
     tss{},
-    interruptBuffer{},
-    spuriousIRQCount(0)
+    spuriousIRQCount(0),
+    kernelContext{},
+    observer{nullptr}
 {
     setupGdt(allocator);
     setupIdt();
+    setupSyscall(allocator);
     initializePIC(IdtHardwareInterruptBase, IdtHardwareInterruptBase + 8);
 }
 
@@ -146,20 +156,43 @@ void Cpu::growStack(TableView addressSpace, std::size_t newSize, PageMapper& pag
     stackSize = growth;
 }
 
-HardwareInterrupt* Cpu::consumeInterrupts(HardwareInterrupt *dest) {
-    return interruptBuffer.popAll(dest);
-}
-
-void Cpu::enableInterrupts() {
+void Cpu::registerObserver(CpuObserver& observer) {
+    this->observer = &observer;
     asm volatile ("sti");
 }
 
-std::uint64_t Cpu::createContext(uintptr_t cr3, std::uint64_t entryPoint, std::uint64_t stackTop, std::uint64_t arg1) {
-    return ::createContext(cr3, entryPoint, stackTop, arg1);
+std::expected<Thread*, rlib::Error> Cpu::createThread(rlib::Allocator& allocator, AddressSpace addressSpace, std::uint64_t entryPoint, std::size_t stackSize, Context::Flags::Type flags) {
+    Context context;
+    context.cr3 = addressSpace.pageDirectoryPhysicalAddress();
+    context.rip = entryPoint;
+    context.flags = flags;
+    context.rflags = 0x202; // Enable interrupts.
+    
+    // Elf file should not put segments here. Perhaps allocate a region dynamically.
+    auto stackBottom = 0x8000'0000'0000 - stackSize;
+    auto stackFlags = PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible | PageFlags::NoExecute;
+    auto stack = addressSpace.allocate(stackBottom, stackSize, stackFlags, PageSize::_4KiB);
+    if (!stack) {
+        return std::unexpected(stack.error());
+    }
+    context.rsp = stackBottom + stackSize;
+
+    auto threadPtr = rlib::constructRaw<Thread>(allocator,  Thread{ context, std::move(addressSpace) });
+    if (threadPtr == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+    threads.push_front(*threadPtr);
+
+    return threadPtr;
 }
 
-void Cpu::switchContext(std::uint64_t contextId) {
-    ::switchContext(contextId);
+void Cpu::killThread(rlib::Allocator& allocator, Thread& thread) {
+    threads.remove(thread);
+    rlib::destruct(&thread, allocator);
+}
+
+void Cpu::scheduleThread(Thread& thread) {
+    ::switchContext(&thread.context);
 }
 
 void Cpu::setupGdt(rlib::Allocator &allocator) {
@@ -167,44 +200,59 @@ void Cpu::setupGdt(rlib::Allocator &allocator) {
                                        | GdtAccess::Present
                                        | GdtAccess::ReadableWritable;
     constexpr auto CodeSegmentAccess = DataSegmentAccess | GdtAccess::Executable;
-    constexpr auto KernelDataSegment = 2;
     constexpr auto TssSegmentBase = 5;
 
     // Construct tss
     constexpr auto interruptStackSize = std::size_t(1024);
-    auto interruptStack = allocator.allocate(interruptStackSize, 16);
+    auto interruptStack = allocator.allocate(1024, 16);
+    if (interruptStack == nullptr) {
+        panic("Not enough memory for interrupt stack");
+    }
     tss.ist[IstIndex - 1] = reinterpret_cast<std::uintptr_t>(interruptStack) + interruptStackSize; 
     tss.iobp = sizeof(TaskStateSegment); // No IOBP
 
     gdt[0] = 0;
     // Kernel code segment
-    gdt[KernelCodeSegmentIndex] = makeSegmentDescriptor(CodeSegmentAccess);
+    gdt[KernelSegmentIndex] = makeSegmentDescriptor(CodeSegmentAccess);
     // Kernel data segment
-    gdt[KernelDataSegment] = makeSegmentDescriptor(DataSegmentAccess);
+    gdt[KernelSegmentIndex + 1] = makeSegmentDescriptor(DataSegmentAccess);
+     // User data segment. Comes before code segment because of sysret.
+    gdt[UserSegmentIndex] = makeSegmentDescriptor(DataSegmentAccess | GdtAccess::UserMode);
     // User code segment
-    gdt[3] = makeSegmentDescriptor(CodeSegmentAccess | GdtAccess::UserMode);
-    // User data segment
-    gdt[4] = makeSegmentDescriptor(DataSegmentAccess | GdtAccess::UserMode);
+    gdt[UserSegmentIndex + 1] = makeSegmentDescriptor(CodeSegmentAccess | GdtAccess::UserMode);
+   
     // Tss segment
     std::tie(gdt[TssSegmentBase], gdt[TssSegmentBase + 1]) = makeTaskStateSegmentDescriptor(reinterpret_cast<uintptr_t>(&tss));
 
-    setGdt(sizeof(gdt), gdt, KernelCodeSegmentIndex, KernelDataSegment, TssSegmentBase);
+    setGdt(sizeof(gdt), gdt, KernelSegmentIndex, TssSegmentBase);
 }
 
 void Cpu::setupIdt() {
-    idt[8] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&doubleFaultHandler), KernelCodeSegmentIndex, GateType::Trap, IstIndex);
+    idt[8] = makeGateDescriptor(reinterpret_cast<uintptr_t>(&doubleFaultHandler), KernelSegmentIndex, GateType::Trap, IstIndex);
     
     // Install 16 IRQ handlers 
     [this]<std::size_t ...Is>(std::index_sequence<Is...>) {
         (
             (idt[Is + IdtHardwareInterruptBase] = 
-                makeGateDescriptor(reinterpret_cast<uintptr_t>(&hardwareInterruptHandler<Is>), KernelCodeSegmentIndex, GateType::Interrupt, IstIndex)
+                makeGateDescriptor(reinterpret_cast<uintptr_t>(&hardwareInterruptHandler<Is>), KernelSegmentIndex, GateType::Interrupt, IstIndex)
             ),
             ...
         );  
     }(std::make_index_sequence<16>{});
 
     setIdt(sizeof(idt), idt);
+}
+
+void Cpu::setupSyscall(rlib::Allocator& allocator) {
+    constexpr auto kernelStackSize = std::size_t(1024);
+    auto kernelStack = allocator.allocate(kernelStackSize, 16);
+    if (kernelStack == nullptr) {
+        panic("Not enough memory for interrupt stack");
+    }
+    core.kernelStack = reinterpret_cast<std::uintptr_t>(kernelStack) + kernelStackSize;
+    core.activeContext = &kernelContext;
+    
+    setupSyscallHandler(KernelSegmentIndex, UserSegmentIndex, &core);
 }
 
 std::uint64_t Register::CR3::read() {
@@ -226,3 +274,14 @@ void Register::CR3::flushTLBS() {
     : : : "%rax"
     );
 };
+
+extern "C" Context* systemCallHandler() {
+    auto& cpu = Cpu::getInstance();
+    
+    if (cpu.observer == nullptr) {
+        return cpu.core.activeContext;
+    }
+    cpu.observer->onSyscall(Thread::fromContext(*(cpu.core.activeContext)));
+
+    return &(cpu.kernelContext);
+}

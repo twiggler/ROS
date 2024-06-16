@@ -8,8 +8,6 @@
 #include <optional>
 #include <expected>
 
-namespace Memory {
-
 constexpr std::size_t operator ""_KiB(unsigned long long int x) {
   return 1024ULL * x;
 }
@@ -110,6 +108,8 @@ class TableEntryView {
 public:
     explicit TableEntryView(std::uint64_t& entry);
 
+    TableEntryView(const TableEntryView&) = default;
+
     TableEntryView& operator=(const TableEntryView&);
     
     bool isUsed() const;
@@ -208,7 +208,7 @@ public:
 
 private:
     friend class rlib::intrusive::List<Region>;
-    friend class rlib::intrusive::ListIterator<Region>;
+    friend class rlib::intrusive::NodeFromBase<Region>;
     
     std::size_t pageSizeInBytes() const;
 
@@ -224,13 +224,19 @@ public:
 
     explicit AddressSpace(PageMapper& pageMapper, TableView tableLevel4, rlib::Allocator& allocator);
 
+    AddressSpace(AddressSpace&& other) = default;
+    
+    AddressSpace(const AddressSpace&) = delete;
+
+    AddressSpace& operator=(const AddressSpace&) = delete;
+
     std::expected<Region*, rlib::Error> reserve(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
     std::expected<Region*, rlib::Error> allocate(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
     std::optional<rlib::Error> mapPage(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames);
     
-    std::uintptr_t pageDirectory() const;
+    std::uintptr_t pageDirectoryPhysicalAddress() const;
     
     // TODO: Take a source "AddressSpace" to improve encapsulation.
     void shallowCopyMapping(TableView from, VirtualAddress startAddress, VirtualAddress endAddress);
@@ -244,5 +250,3 @@ private:
     rlib::Allocator* allocator;
     rlib::intrusive::List<Region> regions;
 };
-
-}
