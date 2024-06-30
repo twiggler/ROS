@@ -101,7 +101,7 @@ __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame*) {
     }
 }
 
-Cpu::Cpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) : 
+Cpu::Cpu(void* interruptStack, void* syscallStack, std::uintptr_t stackTop, std::size_t stackSize) : 
     stackTop(stackTop),
     stackSize(stackSize),
     gdt{ 0 },
@@ -111,25 +111,35 @@ Cpu::Cpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackS
     kernelContext{},
     observer{nullptr}
 {
-    setupGdt(allocator);
+    setupGdt(interruptStack);
     setupIdt();
-    setupSyscall(allocator);
+    setupSyscall(syscallStack);
     initializePIC(IdtHardwareInterruptBase, IdtHardwareInterruptBase + 8);
 }
 
 rlib::OwningPointer<Cpu> Cpu::instance{};
 
-Cpu& Cpu::makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) {
+std::expected<Cpu*, rlib::Error> Cpu::makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) {
     if (Cpu::instance != nullptr) {
-        panic("CPU already constructed");
+        return std::unexpected(AlreadyCreated);
     }
 
-    Cpu::instance = rlib::construct<Cpu>(allocator, allocator, stackTop, stackSize);
+    auto interruptStack = allocator.allocate(InterruptStackSize);
+    if (interruptStack == nullptr) {
+        return std::unexpected(rlib::OutOfMemoryError);
+    }
+
+    auto syscallStack = allocator.allocate(SyscallStackSize);
+    if (syscallStack == nullptr) {
+        return std::unexpected(rlib::OutOfMemoryError);
+    }
+
+    Cpu::instance = rlib::construct<Cpu>(allocator, interruptStack, syscallStack, stackTop, stackSize);
     if (Cpu::instance == nullptr) {
-        panic("Not enough memory for CPU");
+        return std::unexpected(rlib::OutOfMemoryError);
     }
 
-    return *Cpu::instance;
+    return Cpu::instance.get();
 }
 
 Cpu& Cpu::getInstance() {
@@ -195,7 +205,7 @@ void Cpu::scheduleThread(Thread& thread) {
     ::switchContext(&thread.context);
 }
 
-void Cpu::setupGdt(rlib::Allocator &allocator) {
+void Cpu::setupGdt(void* interruptStack) {
     constexpr auto DataSegmentAccess = GdtAccess::CodeDataSegment
                                        | GdtAccess::Present
                                        | GdtAccess::ReadableWritable;
@@ -203,12 +213,8 @@ void Cpu::setupGdt(rlib::Allocator &allocator) {
     constexpr auto TssSegmentBase = 5;
 
     // Construct tss
-    constexpr auto interruptStackSize = std::size_t(1024);
-    auto interruptStack = allocator.allocate(1024, 16);
-    if (interruptStack == nullptr) {
-        panic("Not enough memory for interrupt stack");
-    }
-    tss.ist[IstIndex - 1] = reinterpret_cast<std::uintptr_t>(interruptStack) + interruptStackSize; 
+    
+    tss.ist[IstIndex - 1] = reinterpret_cast<std::uintptr_t>(interruptStack) + InterruptStackSize; 
     tss.iobp = sizeof(TaskStateSegment); // No IOBP
 
     gdt[0] = 0;
@@ -243,13 +249,8 @@ void Cpu::setupIdt() {
     setIdt(sizeof(idt), idt);
 }
 
-void Cpu::setupSyscall(rlib::Allocator& allocator) {
-    constexpr auto kernelStackSize = std::size_t(1024);
-    auto kernelStack = allocator.allocate(kernelStackSize, 16);
-    if (kernelStack == nullptr) {
-        panic("Not enough memory for interrupt stack");
-    }
-    core.kernelStack = reinterpret_cast<std::uintptr_t>(kernelStack) + kernelStackSize;
+void Cpu::setupSyscall(void* syscallStack) {
+    core.kernelStack = reinterpret_cast<std::uintptr_t>(syscallStack) + SyscallStackSize;
     core.activeContext = &kernelContext;
     
     setupSyscallHandler(KernelSegmentIndex, UserSegmentIndex, &core);

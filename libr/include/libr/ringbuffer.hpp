@@ -8,8 +8,6 @@ namespace rlib {
 template<typename T, std::size_t Size>
 class RingBuffer {
 public:
-    RingBuffer();
-
     bool push(const T& value);
 
     T* popAll(T* dest);
@@ -18,12 +16,9 @@ private:
     static std::size_t next(std::size_t current);
 
     T ring[Size];
-    std::atomic<std::size_t> head;
-    std::atomic<std::size_t> tail;
+    std::atomic<std::size_t> head = 0;
+    std::atomic<std::size_t> tail = 0;
 };
-
-template<typename T, std::size_t Size>
-RingBuffer<T, Size>::RingBuffer() : head(0), tail(0) {}
 
 template<typename T, std::size_t Size>
 bool RingBuffer<T, Size>::push(const T& value) {

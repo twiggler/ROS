@@ -19,6 +19,12 @@ struct CR3 {
 
 }
 
+struct CpuErrorCategory : rlib::ErrorCategory {};
+inline constexpr auto cpuErrorCategory = CpuErrorCategory{};
+
+inline constexpr auto AlreadyCreated = rlib::Error{-1, &cpuErrorCategory};
+
+
 struct Context {
     struct Flags {
         using Type = std::uint16_t;
@@ -52,9 +58,6 @@ struct Thread {
 
     rlib::intrusive::ListNode<Thread> listNode;
 };
-
- // The list node is a member because we want the free cast from context to thread.
- using ThreadList = rlib::intrusive::List<Thread, rlib::intrusive::NodeFromMember<Thread, &Thread::listNode>>;
 
 enum class GateType : std::uint8_t {
     Interrupt = 0xe,
@@ -100,12 +103,12 @@ extern "C" Context* systemCallHandler();
 
 class Cpu {
 public:
-    Cpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
+    Cpu(void* interruptStack, void* syscallStack, std::uintptr_t stackTop, std::size_t stackSize);
 
     static constexpr auto InterruptBufferSize = std::size_t(256);
     static constexpr auto MessageBufferSize = std::size_t(256);
     
-    static Cpu& makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
+    static std::expected<Cpu*, rlib::Error> makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
 
     static Cpu& getInstance();
 
@@ -129,15 +132,17 @@ private:
    
     static rlib::OwningPointer<Cpu> instance;
     
-    void setupGdt(rlib::Allocator& allocator);
+    void setupGdt(void* interruptStack);
     void setupIdt();
-    void setupSyscall(rlib::Allocator& allocator);
+    void setupSyscall(void* syscallStack);
 
     static constexpr auto KernelSegmentIndex = std::uint16_t(1);
     static constexpr auto UserSegmentIndex = std::uint16_t(3);
     static constexpr auto IstIndex = std::uint8_t(1);
     static constexpr auto IdtHardwareInterruptBase = std::uint8_t(32);
-    
+    static constexpr auto InterruptStackSize = 1_KiB;
+    static constexpr auto SyscallStackSize = 1_KiB;
+
     // Design: move into process struct?
     std::uintptr_t stackTop;
     std::size_t stackSize; 
@@ -152,6 +157,6 @@ private:
     std::atomic<std::size_t> spuriousIRQCount;
     Core core;             // A single core for now
     Context kernelContext; // Eventually need a kernel thread.
-    ThreadList threads;
+    rlib::intrusive::ListWithNodeMember<Thread, &Thread::listNode> threads;
     CpuObserver* observer;
 };

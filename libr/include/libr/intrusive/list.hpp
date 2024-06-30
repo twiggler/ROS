@@ -4,8 +4,8 @@ namespace rlib::intrusive {
 
 template<class T>
 struct ListNode {
-    T* next;
-    T* prev;
+    T* next = nullptr;
+    T* prev = nullptr;
 };
 
 
@@ -138,9 +138,16 @@ public:
         return ListIterator<T>(nullptr);
     }
 
+    bool empty() const {
+        return head == nullptr;
+    }
+
 private:
     T* head;
     T* tail;
 };
+
+template<class T, ListNode<T> T::*Node>
+using ListWithNodeMember = List<T, NodeFromMember<T, Node>>;
 
 }

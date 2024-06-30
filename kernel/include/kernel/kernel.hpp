@@ -25,8 +25,15 @@ struct Message {
 
 class Kernel : public CpuObserver {
 public:
-    // Design: Type erase allocator?
-    Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, rlib::BumpAllocator allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
+    static constexpr auto IntialHeapSize = std::size_t(512);
+    
+    static std::expected<Kernel, rlib::Error> make(rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, void* initialHeapStorage, TableView rootPageTable, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
+
+    Kernel(TableView addressSpace, PageMapper* pageMapper, Cpu& cpu, rlib::Allocator* allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
+
+    Kernel(const Kernel&) = delete;
+
+    Kernel& operator=(const Kernel&) = delete;
 
     void run();
 
@@ -38,14 +45,14 @@ private:
     // TODO: Implement type erased InputStream
     std::optional<rlib::Error> loadProcess(rlib::InputStream<rlib::MemorySource>& process);    
 
-    TableView                   addressSpace; 
-    PageMapper                  pageMapper;
-    Cpu*                        cpu;
-    rlib::BumpAllocator         allocator;
-    std::uint32_t*              framebuffer;  
-    rlib::RingBuffer<Message, 256> mailbox; // This supports only a single producer i.e. core
-    rlib::RingBuffer<HardwareInterrupt, 256> interrupts;
-    Thread*                     service;
+    TableView                                   addressSpace; 
+    PageMapper*                                 pageMapper;
+    Cpu*                                        cpu;
+    rlib::Allocator*                            allocator;
+    std::uint32_t*                              framebuffer;  
+    rlib::RingBuffer<Message, 256>              mailbox; // This supports only a single producer i.e. core
+    rlib::RingBuffer<HardwareInterrupt, 256>    interrupts;
+    Thread*                                     service;
 };
 
 

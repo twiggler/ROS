@@ -14,7 +14,6 @@ namespace rlib::Elf {
 struct ElfErrorCategory : ErrorCategory {};
 inline constexpr auto elfErrorCategory = ElfErrorCategory{};
 
-inline constexpr auto OutOfMemoryError = Error{-1, &elfErrorCategory};
 inline constexpr auto InvalidElf = Error{-3, &elfErrorCategory};
 inline constexpr auto InvalidClass = Error{-4, &elfErrorCategory};
 inline constexpr auto InvalidEndianness = Error{-5, &elfErrorCategory};

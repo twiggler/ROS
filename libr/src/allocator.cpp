@@ -11,6 +11,10 @@ void Allocator::deallocate(void *p, std::size_t bytes, std::size_t alignment) {
     return do_deallocate(p, bytes, alignment);
 }
 
+bool Allocator::owns(void *p) const {
+    return do_owns(p);
+}
+
 BumpAllocator::BumpAllocator(void* buffer, std::size_t size) :
     buffer(reinterpret_cast<std::byte*>(buffer)), available(size) { }
 
@@ -44,4 +48,9 @@ void BumpAllocator::do_deallocate(void *p, std::size_t bytes, std::size_t alignm
     // NOOP
 }
 
+bool BumpAllocator::do_owns(void *p) const {
+    return p >= buffer && p < buffer + available;
 }
+
+} // namespace rlib
+

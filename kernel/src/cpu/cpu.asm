@@ -174,7 +174,8 @@ switchContext:
     mov     [rsi + Context.r13], r13
     mov     [rsi + Context.r14], r14
     mov     [rsi + Context.r15], r15
-
+    pushfq
+    pop     qword [rsi + Context.rflags]
     jmp     loadContext
 
 
@@ -196,6 +197,8 @@ loadContext:
     test    dword [rdi + Context.flags], FlagsKernelMode
     jz      .return_to_user_mode
     ; Stay in kernel mode
+    push    qword [rdi + Context.rflags]  ; Restore rflags 
+    popfq   
     jmp     [rdi + Context.rip]
 
 .return_to_user_mode:
@@ -219,6 +222,7 @@ systemCallThunk:
     mov     rsp, qword [gs:Core.kernelStack]
     call    systemCallHandler
 
+    ; After processing the system call by sending a message, we typically switch to the kernel to reduce latency
     mov     rdi, rax
     jmp     loadContext
 
