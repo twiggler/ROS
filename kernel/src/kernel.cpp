@@ -4,6 +4,19 @@
 
 using namespace rlib;
 
+std::expected<Kernel, rlib::Error> Kernel::make(rlib::Iterator<Block>& memoryMap, IdentityMapping& identityMapping, InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer) {
+    auto pageMapper = PageMapper(0 /* Bootboot identity maps first 16GB */, std::move(frameAllocator));
+
+    auto allocator = makeHeap(tableLevel4, pageMapper, startKernelSpace, 4);
+    
+    // Stack size should correspond to value in linker script "link.ld".
+    auto& cpu = Cpu::makeCpu(allocator, 0xffffffff'ffffffff, 16_KiB);
+    
+    auto relocatedTableLevel4 = pageMapper.mapTableView(Register::CR3::read());
+    return Kernel(relocatedTableLevel4, std::move(pageMapper), cpu, std::move(allocator), std::move(inputStream), &fb);
+}
+
+
 Kernel::Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, BumpAllocator allocator, InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer) :
     addressSpace(addressSpace),
     pageMapper(std::move(pageMapper)),
@@ -19,6 +32,7 @@ Kernel::Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, BumpAllo
     }
     loadProcess(*elfStream);
 }
+
 
 void Kernel::run() {
     HardwareInterrupt interruptBuffer[Cpu::InterruptBufferSize];

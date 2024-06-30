@@ -5,6 +5,7 @@
 #include <libr/error.hpp>
 #include <libr/pointer.hpp>
 #include <libr/intrusive/list.hpp>
+#include <libr/type_erasure.hpp>
 #include <optional>
 #include <expected>
 
@@ -46,25 +47,56 @@ struct Block {
     Block take(std::size_t amount) const;
 
     Block resize(std::size_t newSize) const;
+
+    std::uintptr_t endAddress() const;
+};
+
+class VirtualAddress {
+public:
+    VirtualAddress(std::uintptr_t address);
+
+    std::uint16_t indexLevel4() const;
+
+    std::uint16_t indexLevel3() const;
+
+    std::uint16_t indexLevel2() const;
+
+    std::uint16_t indexLevel1() const;
+
+    template<class T = void>
+    T* ptr() const { return reinterpret_cast<T*>(address); };
+
+    operator std::uintptr_t() const;
+
+private:
+    std::uintptr_t address;
+};
+
+struct IdentityMapping {
+    explicit IdentityMapping(std::size_t offset);
+
+    VirtualAddress translate(std::size_t physicalAddress) const;
+private: 
+    std::size_t offset;
+};
+
+struct FreePage {
+    std::uintptr_t physicalAddress;
+    rlib::intrusive::ListNode<FreePage> node;
 };
 
 // Basic page frame allocator owning a stack of physical memory frames.
 // Requires a lot of memory, optimize. 
 class PageFrameAllocator {
 public:
-    static std::optional<PageFrameAllocator> make(rlib::Allocator& allocator, std::size_t physicalMemory, std::size_t frameSize);
-
-    PageFrameAllocator(rlib::OwningPointer<std::uintptr_t[]> base, std::size_t physicalMemory, std::size_t frameSize);
-
-    std::size_t physicalMemory() const;
+    PageFrameAllocator(rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, std::size_t frameSize);
 
     std::expected<Block, rlib::Error> alloc();
 
     void dealloc(std::uintptr_t physicalAddress);
 private:
-    rlib::OwningPointer<std::uintptr_t[]> base;
-    std::uintptr_t* top;
-    std::size_t _physicalMemory;
+    rlib::intrusive::ListWithNodeMember<FreePage, &FreePage::node> freePages;
+    IdentityMapping identityMapping;
     std::size_t frameSize;
 };
 
@@ -84,24 +116,6 @@ enum struct PageSize : std::uint32_t {
     _4KiB = 4_KiB,
     _2MiB = 2_MiB,
     _1GiB = 1_GiB
-};
-
-class VirtualAddress {
-public:
-    VirtualAddress(std::uintptr_t address);
-
-    std::uint16_t indexLevel4() const;
-
-    std::uint16_t indexLevel3() const;
-
-    std::uint16_t indexLevel2() const;
-
-    std::uint16_t indexLevel1() const;
-
-    operator std::uintptr_t() const;
-
-private:
-    std::uintptr_t address;
 };
 
 class TableEntryView {
@@ -159,7 +173,7 @@ public:
      * @param offset Virtual address where mapping of physical memory starts.
      * @param frameAllocator Page frame allocator
      */ 
-    PageMapper(std::uintptr_t offset, PageFrameAllocator frameAllocator);
+    PageMapper(IdentityMapping identityMapping, PageFrameAllocator frameAllocator);
 
     TableView mapTableView(std::uintptr_t physicalAddress) const;
     
@@ -179,14 +193,12 @@ public:
 
     std::size_t unmapAndDeallocateRange(TableView addressSpace, VirtualAddress virtualAddress, std::size_t size);
     
-    void relocate(std::uintptr_t newOffset);
-
 private:
     std::expected<TableView, rlib::Error> ensurePageTable(TableEntryView entry);
 
     TableView mapTableView(TableEntryView entry) const; 
 
-    std::uintptr_t offset;
+    IdentityMapping identityMapping;
     PageFrameAllocator frameAllocator;
 };
 

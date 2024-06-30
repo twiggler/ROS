@@ -25,6 +25,8 @@ struct Message {
 
 class Kernel : public CpuObserver {
 public:
+    static std::expected<Kernel, rlib::Error> make(rlib::Iterator<Block>& memoryMap, IdentityMapping& identityMapping, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
+
     // Design: Type erase allocator?
     Kernel(TableView addressSpace, PageMapper pageMapper, Cpu& cpu, rlib::BumpAllocator allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
 

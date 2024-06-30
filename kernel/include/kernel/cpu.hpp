@@ -53,9 +53,6 @@ struct Thread {
     rlib::intrusive::ListNode<Thread> listNode;
 };
 
- // The list node is a member because we want the free cast from context to thread.
- using ThreadList = rlib::intrusive::List<Thread, rlib::intrusive::NodeFromMember<Thread, &Thread::listNode>>;
-
 enum class GateType : std::uint8_t {
     Interrupt = 0xe,
     Trap = 0xf
@@ -152,6 +149,6 @@ private:
     std::atomic<std::size_t> spuriousIRQCount;
     Core core;             // A single core for now
     Context kernelContext; // Eventually need a kernel thread.
-    ThreadList threads;
+    rlib::intrusive::ListWithNodeMember<Thread, &Thread::listNode> threads;
     CpuObserver* observer;
 };

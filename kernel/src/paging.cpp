@@ -17,35 +17,8 @@ Block Block::resize(std::size_t newSize) const {
     return Block{startAddress, newSize };
 }
 
-std::optional<PageFrameAllocator> PageFrameAllocator::make(rlib::Allocator& allocator, std::size_t physicalMemory, std::size_t frameSize) {
-    auto base = rlib::construct<std::uintptr_t[]>(allocator, physicalMemory / frameSize);
-    if (base == nullptr) {
-        return {};
-    }
-    
-    return PageFrameAllocator(nullptr, physicalMemory, frameSize);
-}
-
-PageFrameAllocator::PageFrameAllocator(rlib::OwningPointer<std::uintptr_t[]> base, std::size_t physicalMemory, std::size_t frameSize) :
-    base(std::move(base)),
-    top(base.get()),
-    _physicalMemory(physicalMemory),
-    frameSize(frameSize) {}
-
-std::size_t PageFrameAllocator::physicalMemory() const {
-    return _physicalMemory;
-}
-
-std::expected<Block, rlib::Error> PageFrameAllocator::alloc() { 
-    if (top == base.get()) {
-        return std::unexpected(OutOfPhysicalMemory);
-    }
-
-    return Block{(*(--top)), frameSize };
-}
-
-void PageFrameAllocator::dealloc(std::uintptr_t physicalAddress) {
-    *(top++) = physicalAddress;
+std::uintptr_t Block::endAddress() const {
+    return startAddress + size;
 }
 
 VirtualAddress::VirtualAddress(std::uintptr_t address) :
@@ -69,6 +42,39 @@ std::uint16_t VirtualAddress::indexLevel1() const {
 
 VirtualAddress::operator std::uintptr_t() const {
     return address;
+}
+
+IdentityMapping::IdentityMapping(std::size_t offset) :
+    offset(offset) {}
+
+VirtualAddress IdentityMapping::translate(std::size_t physicalAddress) const {
+    return physicalAddress + offset;
+}
+
+PageFrameAllocator::PageFrameAllocator(rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, std::size_t frameSize) :
+    identityMapping(identityMapping),
+    frameSize(frameSize)
+{
+    for (auto block = memoryMap.next(); block; block = memoryMap.next()) {
+        for (auto physicalAddress = block->startAddress; physicalAddress < block->endAddress(); physicalAddress += frameSize) {
+            dealloc(physicalAddress);
+        }
+    }    
+}
+
+std::expected<Block, rlib::Error> PageFrameAllocator::alloc() { 
+    if (freePages.empty()) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+
+    auto freePage = freePages.pop_front();
+    return Block{ freePage->physicalAddress, frameSize };
+}
+
+void PageFrameAllocator::dealloc(std::uintptr_t physicalAddress) {
+    auto virtualAddress = identityMapping.translate(physicalAddress);
+    auto freePage = ::new (virtualAddress.ptr()) FreePage{ physicalAddress };
+    freePages.push_front(*freePage);
 }
 
 TableEntryView::TableEntryView(std::uint64_t& entry) : 
@@ -120,15 +126,15 @@ TableEntryView TableView::at(std::uint16_t index) {
     return _physicalAddress;
 }
 
-PageMapper::PageMapper(std::uintptr_t offset, PageFrameAllocator allocator) :
-    offset(offset), frameAllocator(std::move(allocator)) {}
+PageMapper::PageMapper(IdentityMapping identityMapping, PageFrameAllocator allocator) :
+    identityMapping(identityMapping), frameAllocator(std::move(allocator)) {}
 
 TableView PageMapper::mapTableView(std::uintptr_t physicalAddress) const {
     // We need to explicitly start the lifetime of any existing page tables.
     // However, "std::start_lifetime_as" is not implemented yet in gcc.
     // Technically, reading and writing to page entries is UB.
 
-    auto virtualAddress = reinterpret_cast<std::uint64_t*>(offset + physicalAddress);
+    auto virtualAddress = identityMapping.translate(physicalAddress).ptr<std::uint64_t>();
     return TableView(virtualAddress, physicalAddress);
 }
 
@@ -138,8 +144,8 @@ std::expected<TableView, rlib::Error> PageMapper::createPageTable() {
         return std::unexpected(OutOfPhysicalMemory);
     }
     
-    auto tableStorage = reinterpret_cast<void*>(offset + newTableBlock->startAddress);
-    auto tablePtr = new (tableStorage) (std::uint64_t[512]);
+    auto tableStorage = identityMapping.translate(newTableBlock->startAddress);
+    auto tablePtr = new (tableStorage.ptr()) (std::uint64_t[512]);
     auto table = TableView(tablePtr, newTableBlock->startAddress);
 
     for (auto i = 0; i < 512; i++) {
@@ -259,7 +265,7 @@ std::expected<PageFrame, rlib::Error> PageMapper::allocate() {
         return std::unexpected(OutOfPhysicalMemory);
     }
 
-    return PageFrame{reinterpret_cast<void*>(offset + block->startAddress), block->startAddress};
+    return PageFrame{ identityMapping.translate(block->startAddress).ptr(), block->startAddress };
 }
 
 std::optional<rlib::Error> PageMapper::allocateAndMap(TableView addressSpace, VirtualAddress virtualAddress, PageFlags::Type flags) {
@@ -294,10 +300,6 @@ std::size_t PageMapper::unmapAndDeallocateRange(TableView addressSpace, VirtualA
     }
 
     return freed;
-}
-
-void PageMapper::relocate(std::uintptr_t newOffset) {
-    offset = newOffset;
 }
 
 std::expected<TableView, rlib::Error> PageMapper::ensurePageTable(TableEntryView entry) { 
