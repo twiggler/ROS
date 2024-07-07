@@ -44,14 +44,19 @@ SECTIONS
 {
     . = 0xffffffffffe02000;
     .text : {
+        __code_start = .;
         KEEP(*(.text.boot)) *(.text .text.*)   /* code */
+        
         *(.rodata .rodata.*)                   /* data */
+        . = ALIGN(4096);
+        __writable_data_start = .;
         *(.data .data.*)
     } :boot
     .bss (NOLOAD) : {                          /* bss */
         . = ALIGN(16);
         *(.bss .bss.*)
         *(COMMON)
+        __writable_data_end = .;
     } :boot
 
     /DISCARD/ : { *(.eh_frame) *(.comment) }

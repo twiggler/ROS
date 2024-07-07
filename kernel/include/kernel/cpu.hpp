@@ -14,6 +14,8 @@ namespace Register {
 struct CR3 {
     static std::uint64_t read();
 
+    static void write(std::uint64_t rootPageTablePhysicalAddress);
+
     static void flushTLBS(); 
 };
 
@@ -30,6 +32,8 @@ struct Context {
         using Type = std::uint16_t;
         static constexpr auto KernelMode = Type(1) << 0;
     };
+
+    static Context make(Context::Flags::Type flags, std::uintptr_t rootPageTablePhysicalAddress, VirtualAddress entryPoint, VirtualAddress stackTop);
    
     std::uint64_t   rflags;
     std::uint64_t   cr3;
@@ -46,18 +50,6 @@ struct Context {
 
 // Assert no padding, otherwise assembler code will break.
 static_assert(sizeof(Context) == 10 * sizeof(std::uint64_t) + sizeof(std::uint16_t));
-
-struct Thread {
-    static Thread* fromContext(Context& context);
-    
-    Thread(Context context, AddressSpace addressSpace);
-    
-    Context context;
-    
-    AddressSpace addressSpace;
-
-    rlib::intrusive::ListNode<Thread> listNode;
-};
 
 enum class GateType : std::uint8_t {
     Interrupt = 0xe,
@@ -95,7 +87,7 @@ static_assert(sizeof(Core) == 2 * sizeof(std::uint64_t));
 struct CpuObserver {
     virtual void onInterrupt(std::uint8_t Irq) = 0;
 
-    virtual void onSyscall(Thread* sender) = 0;
+    virtual Context& onSyscall(Context& sender) = 0;
 };
 
 
@@ -103,26 +95,19 @@ extern "C" Context* systemCallHandler();
 
 class Cpu {
 public:
-    Cpu(void* interruptStack, void* syscallStack, std::uintptr_t stackTop, std::size_t stackSize);
-
-    static constexpr auto InterruptBufferSize = std::size_t(256);
-    static constexpr auto MessageBufferSize = std::size_t(256);
+    Cpu(void* interruptStack, void* syscallStack, Context& initialContext);
     
-    static std::expected<Cpu*, rlib::Error> makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize);
+    static std::expected<Cpu*, rlib::Error> make(rlib::Allocator& allocator, Context& intialContext);
+
+    static void setRootPageTable(std::uint64_t rootPageTablePhysicalAddress);
 
     static Cpu& getInstance();
 
     static void halt();
 
-    void growStack(TableView addressSpace, std::size_t newSize, PageMapper& pageMapper);
-
     void registerObserver(CpuObserver& observer);
 
-    std::expected<Thread*, rlib::Error> createThread(rlib::Allocator& allocator, AddressSpace addressSpace, std::uint64_t entryPoint, std::size_t stackSize, Context::Flags::Type flags); 
-
-    void killThread(rlib::Allocator& allocator, Thread& thread);
-
-    void scheduleThread(Thread& thread);
+    void scheduleContext(Context& context);
 
 private:
     template<std::uint8_t Irq> friend 
@@ -134,7 +119,7 @@ private:
     
     void setupGdt(void* interruptStack);
     void setupIdt();
-    void setupSyscall(void* syscallStack);
+    void setupSyscall(void* syscallStack, Context& initialContext);
 
     static constexpr auto KernelSegmentIndex = std::uint16_t(1);
     static constexpr auto UserSegmentIndex = std::uint16_t(3);
@@ -142,10 +127,6 @@ private:
     static constexpr auto IdtHardwareInterruptBase = std::uint8_t(32);
     static constexpr auto InterruptStackSize = 1_KiB;
     static constexpr auto SyscallStackSize = 1_KiB;
-
-    // Design: move into process struct?
-    std::uintptr_t stackTop;
-    std::size_t stackSize; 
     
     uint64_t gdt[7];
     IdtDescriptor idt[256];
@@ -156,7 +137,6 @@ private:
     TaskStateSegment tss;
     std::atomic<std::size_t> spuriousIRQCount;
     Core core;             // A single core for now
-    Context kernelContext; // Eventually need a kernel thread.
-    rlib::intrusive::ListWithNodeMember<Thread, &Thread::listNode> threads;
+   
     CpuObserver* observer;
 };

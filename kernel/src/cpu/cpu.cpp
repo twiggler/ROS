@@ -34,14 +34,15 @@ struct InterruptFrame {
     std::uint64_t ss;
 };
 
-Thread::Thread(Context context, AddressSpace addressSpace) :
-        context(std::move(context)), 
-        addressSpace(std::move(addressSpace)) {}
+Context Context::make(Context::Flags::Type flags, std::uintptr_t rootPageTablePhysicalAddress, VirtualAddress entryPoint, VirtualAddress stackTop) {
+    Context context{};
+    context.flags = flags;
+    context.cr3 = rootPageTablePhysicalAddress;
+    context.rip = entryPoint;
+    context.rsp = stackTop;
+    context.rflags = 0x202; // Enable interrupts.
 
-Thread* Thread::fromContext(Context& context) {
-    static_assert(offsetof(Thread, context) == 0);
-
-    return reinterpret_cast<Thread*>(&context);
+    return context;
 }
 
 constexpr std::uint64_t makeSegmentDescriptor(GdtAccess::Type access) {
@@ -101,25 +102,22 @@ __attribute__((interrupt)) void hardwareInterruptHandler(InterruptFrame*) {
     }
 }
 
-Cpu::Cpu(void* interruptStack, void* syscallStack, std::uintptr_t stackTop, std::size_t stackSize) : 
-    stackTop(stackTop),
-    stackSize(stackSize),
+Cpu::Cpu(void* interruptStack, void* syscallStack, Context& initialContext) : 
     gdt{ 0 },
     idt{ { 0, 0 } },
     tss{},
     spuriousIRQCount(0),
-    kernelContext{},
     observer{nullptr}
 {
     setupGdt(interruptStack);
     setupIdt();
-    setupSyscall(syscallStack);
+    setupSyscall(syscallStack, initialContext);
     initializePIC(IdtHardwareInterruptBase, IdtHardwareInterruptBase + 8);
 }
 
 rlib::OwningPointer<Cpu> Cpu::instance{};
 
-std::expected<Cpu*, rlib::Error> Cpu::makeCpu(rlib::Allocator& allocator, std::uintptr_t stackTop, std::size_t stackSize) {
+std::expected<Cpu*, rlib::Error> Cpu::make(rlib::Allocator& allocator, Context& initialContext) {
     if (Cpu::instance != nullptr) {
         return std::unexpected(AlreadyCreated);
     }
@@ -134,7 +132,7 @@ std::expected<Cpu*, rlib::Error> Cpu::makeCpu(rlib::Allocator& allocator, std::u
         return std::unexpected(rlib::OutOfMemoryError);
     }
 
-    Cpu::instance = rlib::construct<Cpu>(allocator, interruptStack, syscallStack, stackTop, stackSize);
+    Cpu::instance = rlib::construct<Cpu>(allocator, interruptStack, syscallStack, initialContext);
     if (Cpu::instance == nullptr) {
         return std::unexpected(rlib::OutOfMemoryError);
     }
@@ -150,20 +148,8 @@ void Cpu::halt() {
     asm volatile ("hlt");
 }
 
-void Cpu::growStack(TableView addressSpace, std::size_t newSize, PageMapper& pageMapper) {
-    if (stackSize >= newSize) {
-        return;
-    }
-
-    auto growth = (newSize - stackSize + 4_KiB - 1) & ~(4_KiB - 1);
-    constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
-    auto error = pageMapper.allocateAndMapRange(addressSpace, stackTop - stackSize - growth, flags, growth / 4_KiB);
-    if (error) {
-        panic("Cannot grow stack");
-    }
-    
-    Register::CR3::flushTLBS();
-    stackSize = growth;
+void Cpu::setRootPageTable(std::uint64_t rootPageTablePhysicalAddress) {
+    Register::CR3::write(rootPageTablePhysicalAddress);
 }
 
 void Cpu::registerObserver(CpuObserver& observer) {
@@ -171,38 +157,8 @@ void Cpu::registerObserver(CpuObserver& observer) {
     asm volatile ("sti");
 }
 
-std::expected<Thread*, rlib::Error> Cpu::createThread(rlib::Allocator& allocator, AddressSpace addressSpace, std::uint64_t entryPoint, std::size_t stackSize, Context::Flags::Type flags) {
-    Context context;
-    context.cr3 = addressSpace.pageDirectoryPhysicalAddress();
-    context.rip = entryPoint;
-    context.flags = flags;
-    context.rflags = 0x202; // Enable interrupts.
-    
-    // Elf file should not put segments here. Perhaps allocate a region dynamically.
-    auto stackBottom = 0x8000'0000'0000 - stackSize;
-    auto stackFlags = PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible | PageFlags::NoExecute;
-    auto stack = addressSpace.allocate(stackBottom, stackSize, stackFlags, PageSize::_4KiB);
-    if (!stack) {
-        return std::unexpected(stack.error());
-    }
-    context.rsp = stackBottom + stackSize;
-
-    auto threadPtr = rlib::constructRaw<Thread>(allocator,  Thread{ context, std::move(addressSpace) });
-    if (threadPtr == nullptr) {
-        return std::unexpected(OutOfPhysicalMemory);
-    }
-    threads.push_front(*threadPtr);
-
-    return threadPtr;
-}
-
-void Cpu::killThread(rlib::Allocator& allocator, Thread& thread) {
-    threads.remove(thread);
-    rlib::destruct(&thread, allocator);
-}
-
-void Cpu::scheduleThread(Thread& thread) {
-    ::switchContext(&thread.context);
+void Cpu::scheduleContext(Context& context) {
+    ::switchContext(&context);
 }
 
 void Cpu::setupGdt(void* interruptStack) {
@@ -249,9 +205,9 @@ void Cpu::setupIdt() {
     setIdt(sizeof(idt), idt);
 }
 
-void Cpu::setupSyscall(void* syscallStack) {
+void Cpu::setupSyscall(void* syscallStack, Context& initialContext) {
     core.kernelStack = reinterpret_cast<std::uintptr_t>(syscallStack) + SyscallStackSize;
-    core.activeContext = &kernelContext;
+    core.activeContext = &initialContext;
     
     setupSyscallHandler(KernelSegmentIndex, UserSegmentIndex, &core);
 }
@@ -268,6 +224,14 @@ std::uint64_t Register::CR3::read() {
     return cr3;
 };
 
+void Register::CR3::write(std::uint64_t value) {
+    asm volatile (
+        "mov %0, %%rax;"
+        "mov %%rax, %%cr3"
+    : : "m" (value) : "%rax"
+    );
+};
+
 void Register::CR3::flushTLBS() {
     asm volatile (
         "mov %%cr3, %%rax;"
@@ -282,7 +246,6 @@ extern "C" Context* systemCallHandler() {
     if (cpu.observer == nullptr) {
         return cpu.core.activeContext;
     }
-    cpu.observer->onSyscall(Thread::fromContext(*(cpu.core.activeContext)));
-
-    return &(cpu.kernelContext);
+    
+    return &cpu.observer->onSyscall(*cpu.core.activeContext);
 }

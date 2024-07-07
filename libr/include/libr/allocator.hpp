@@ -52,6 +52,27 @@ namespace rlib {
     template <typename T>
     concept IsAllocator = std::is_base_of_v<Allocator, T>;
 
+    template<IsAllocator BaseAllocator>
+    class RefAllocator : public Allocator {
+    public:
+        RefAllocator(BaseAllocator& ref)
+         : ref(&ref) { }
+    private:
+        BaseAllocator* ref;
+
+        virtual void* do_allocate(std::size_t bytes, std::size_t alignment) final {
+            return ref->allocate(bytes, alignment);
+        }
+
+        virtual void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) final {
+            ref->deallocate(p, bytes, alignment);
+        }
+
+        virtual bool do_owns(void *p) const final {
+            return ref->owns(p);
+        }
+    };  
+
     template<IsAllocator PrimaryAllocator, IsAllocator SecondaryAllocator>
     class FallbackAllocator : public Allocator {
     public:

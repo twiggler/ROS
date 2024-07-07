@@ -56,6 +56,9 @@ public:
     constexpr VirtualAddress(std::uintptr_t address) : 
         address(address) {}
 
+    constexpr VirtualAddress(void* ptr) :
+        address(reinterpret_cast<std::uintptr_t>(ptr)) {}
+
     constexpr std::uint16_t indexLevel4() const {
         return (address >> 39) & 0x1FF;
     }
@@ -75,7 +78,7 @@ public:
     template<class T = void>
     constexpr T* ptr() const { 
         return reinterpret_cast<T*>(address); 
-    };
+    }
 
     constexpr operator std::uintptr_t() const {
         return address;
@@ -139,7 +142,7 @@ public:
 
     TableEntryView& operator=(const TableEntryView&);
     
-    bool isUsed() const;
+    operator bool() const;
 
     PageFlags::Type flags() const;
 
@@ -162,7 +165,7 @@ class TableView {
 public:
     TableView(std::uint64_t* ptr, std::uintptr_t physicalAddress);
 
-    TableEntryView at(std::uint16_t index);
+    TableEntryView at(std::uint16_t index) const;
 
     std::uintptr_t physicalAddress() const;
 
@@ -197,6 +200,8 @@ public:
     std::expected<TableView, rlib::Error> createPageTable();
     
     std::optional<rlib::Error> map(TableView addressSpace, VirtualAddress virtualAddress, std::uint64_t physicalAddress, PageSize pageSize, PageFlags::Type flags);
+
+    std::optional<std::uintptr_t> read(TableView addressSpace, VirtualAddress virtualAddress);
     
     std::optional<Block> unmap(TableView addressSpace, VirtualAddress virtualAddress);
 
@@ -227,13 +232,17 @@ public:
 
     std::optional<rlib::Error> mapPage(TableView tableLevel4, PageMapper& pageMapper, std::uint64_t physicalAddress, std::size_t pageIndex);
 
-    std::optional<rlib::Error> map(TableView tableLevel4, PageMapper& pageMapper);
+    std::optional<rlib::Error> allocatePage(TableView tableLevel4, PageMapper& pageMapper, std::size_t pageIndex); 
+    
+    std::optional<rlib::Error> allocate(TableView tableLevel4, PageMapper& pageMapper);
 
     VirtualAddress start() const;
 
     VirtualAddress end() const;
 
-    std::size_t size() const;   
+    std::size_t size() const;
+
+    std::size_t sizeInFrames() const;   
 
 private:
     friend class rlib::intrusive::List<Region>;
@@ -242,7 +251,7 @@ private:
     std::size_t pageSizeInBytes() const;
 
     VirtualAddress _start;
-    std::size_t sizeInFrames;
+    std::size_t _sizeInFrames;
     PageFlags::Type pageFlags;
     PageSize _pageSize;
 };
@@ -263,19 +272,19 @@ public:
 
     std::expected<Region*, rlib::Error> allocate(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
-    std::optional<rlib::Error> mapPage(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames);
+    std::optional<rlib::Error> mapPageOfRegion(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames);
+
+    std::optional<rlib::Error> allocatePageOfRegion(Region& region, std::size_t offsetInFrames);
     
-    std::uintptr_t pageDirectoryPhysicalAddress() const;
+    std::uintptr_t rootTablePhysicalAddress() const;
     
-    // TODO: Take a source "AddressSpace" to improve encapsulation.
-    void shallowCopyMapping(TableView from, VirtualAddress startAddress, VirtualAddress endAddress);
+    void shallowCopyRootMapping(const AddressSpace& from, VirtualAddress startAddress, VirtualAddress endAddress);
     
     ~AddressSpace();
 
 private:
     PageMapper* pageMapper;
     TableView tableLevel4;
-    // Is a custom allocator worth it, or can we get by with a generic kernel allocator?
     rlib::Allocator* allocator;
     rlib::intrusive::List<Region> regions;
 };

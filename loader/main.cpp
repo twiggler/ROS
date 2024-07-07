@@ -18,9 +18,15 @@
 extern BOOTBOOT bootboot;
 extern unsigned char environment[4096];
 extern std::uint32_t fb;                // linear framebuffer mapped
+extern unsigned char initstack;
+
+// Map of sections in the kernel binary
+extern unsigned char __code_start;
+extern unsigned char __writable_data_start;
+extern unsigned char __writable_data_end;
 
 // Initial heap
-std::byte initialHeap[Kernel::IntialHeapSize];
+alignas(std::max_align_t) std::byte initialHeap[Kernel::IntialHeapSize];
 
 FrameBufferInfo getFrameBufferInfo() {
     return {
@@ -65,13 +71,25 @@ std::expected<Kernel, rlib::Error> makeKernel() {
 
     auto numberOfMemoryMapEntries = (bootboot.size - 128) / 16;
     auto memoryMap = std::span(&bootboot.mmap, numberOfMemoryMapEntries);
+    auto sizeAccumulator =  [](auto acc, auto block) { return acc + MMapEnt_Size(&block); };
+    auto totalPhysicalMemory = std::accumulate(memoryMap.begin(), memoryMap.end(), std::size_t(0), sizeAccumulator);
     auto memoryMapIterator = MemoryMapIterator(std::move(memoryMap));
-
-    auto memorySource = rlib::MemorySource(reinterpret_cast<std::byte*>(bootboot.initrd_ptr), bootboot.initrd_size);
-    auto inputStream = rlib::InputStream(std::move(memorySource));
     auto identityMapping = IdentityMapping(startKernelSpace); 
 
-    return Kernel::make(memoryMapIterator, identityMapping, initialHeap, tableLevel4, inputStream, &fb); 
+    auto memoryLayout = MemoryLayout{
+        &memoryMapIterator,
+        totalPhysicalMemory,
+        identityMapping,
+        reinterpret_cast<std::uintptr_t>(&__code_start),
+        reinterpret_cast<std::uintptr_t>(&__writable_data_start),
+        reinterpret_cast<std::uintptr_t>(&__writable_data_end),
+        reinterpret_cast<std::uintptr_t>(&initstack),
+        &fb,
+        bootboot.fb_size,
+        bootboot.initrd_ptr,    // This equals the physical address because of the identity mapping provided by BOOTBOOT
+        bootboot.initrd_size
+    };
+    return Kernel::make(memoryLayout, initialHeap, tableLevel4); 
 }
 
 int main()

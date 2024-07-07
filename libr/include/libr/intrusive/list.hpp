@@ -142,6 +142,10 @@ public:
         return head == nullptr;
     }
 
+    T* back() const {
+        return tail;
+    }
+
 private:
     T* head;
     T* tail;

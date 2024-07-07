@@ -6,62 +6,187 @@
 
 using namespace rlib;
 
-std::expected<Kernel, Error> Kernel::make(Iterator<Block>& memoryMap, IdentityMapping identityMapping, void* initialHeapStorage, TableView rootPageTable, InputStream<MemorySource> initrd, std::uint32_t* framebuffer) {
-    auto pageFrameAllocator = PageFrameAllocator(memoryMap, identityMapping);
-    auto initialAllocator = BumpAllocator(initialHeapStorage, IntialHeapSize);
-    auto pageMapper = constructRaw<PageMapper>(initialAllocator, identityMapping, std::move(pageFrameAllocator));
+Thread::Thread(Context context, AddressSpace addressSpace) :
+        context(std::move(context)), 
+        addressSpace(std::move(addressSpace)) {}
+
+Thread* Thread::fromContext(Context& context) {
+    static_assert(offsetof(Thread, context) == 0);
+
+    return reinterpret_cast<Thread*>(&context);
+}
+
+std::expected<Thread*, rlib::Error> Thread::make(rlib::Allocator& allocator, AddressSpace addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop) {
+    auto context = Context::make(Context::Flags::Type(0), addressSpace.rootTablePhysicalAddress(), entryPoint, stackTop);
+
+    auto threadPtr = rlib::constructRaw<Thread>(allocator, Thread{std::move(context), std::move(addressSpace) });
+    if (threadPtr == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+
+    return threadPtr;
+}
+
+
+std::expected<Kernel, Error> Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView rootPageTable) {
+    auto pageFrameAllocator = PageFrameAllocator(*memoryLayout.freeMemoryBlocks, memoryLayout.identityMapping);
+    // A stable reference to initialAllocator is required for construction the kernel address space (in theory; in practice, the kernel address space is never deallocated).
+    // Assume initialHeapStorage is aligned for BumpAllocator.
+    auto initialAllocator = ::new(initialHeapStorage) BumpAllocator(initialHeapStorage + sizeof(BumpAllocator), IntialHeapSize - sizeof(BumpAllocator));
+    auto pageMapper = constructRaw<PageMapper>(*initialAllocator, memoryLayout.identityMapping, std::move(pageFrameAllocator));
     if (pageMapper == nullptr) {
         return std::unexpected(OutOfPhysicalMemory);
     } 
-
-    constexpr auto flags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
-    constexpr auto heapSizeInFrames = std::size_t(4);
-    // TODO: Properly calculate when creating kernel address space
-    auto heapStart = VirtualAddress(0xFFFF8000'00000000 + 16_GiB);
-    auto error = pageMapper->allocateAndMapRange(rootPageTable, heapStart, flags, heapSizeInFrames * 4_KiB);
-    if (error) {
-        return std::unexpected(*error);
+    
+    auto kernelAddressSpaceAndHeap = Kernel::makeKernelAddressSpace(rootPageTable, memoryLayout, *pageMapper, *initialAllocator);
+    if (!kernelAddressSpaceAndHeap) {
+        return std::unexpected(kernelAddressSpaceAndHeap.error());
     }
-    // Todo abstract this away
-    Register::CR3::flushTLBS();
-    
-    auto stackAllocator = BumpAllocator(heapStart.ptr(), heapSizeInFrames * 4_KiB);
-    using AllocatorType = rlib::FallbackAllocator<decltype(stackAllocator), decltype(stackAllocator)>;
-    auto allocatorStorage = initialAllocator.allocate(sizeof(AllocatorType), alignof(AllocatorType));
-    auto allocator = ::new (allocatorStorage) FallbackAllocator(std::move(initialAllocator), std::move(stackAllocator));
-    
-    // Stack size should correspond to value in linker script "link.ld".
-    auto cpu = Cpu::makeCpu(*allocator, 0xffffffff'ffffffff, 16_KiB);
+    auto [kernelAddressSpace, heapRegion ] = std::move(*kernelAddressSpaceAndHeap);
+    Cpu::setRootPageTable(kernelAddressSpace.rootTablePhysicalAddress());
+
+    // Wrap construction of allocator to infer its type
+    auto makeFallbackAllocator = [=](void* storage) mutable -> auto {
+        auto stackAllocator = BumpAllocator(heapRegion->start().ptr(), heapRegion->size()); 
+        return ::new (storage) FallbackAllocator(RefAllocator(*initialAllocator), std::move(stackAllocator));
+    };
+    using AllocatorType = std::remove_pointer_t<decltype(makeFallbackAllocator(std::declval<void*>()))>;
+    auto allocatorStorage = initialAllocator->allocate(sizeof(AllocatorType), alignof(AllocatorType));
+    auto allocator = makeFallbackAllocator(allocatorStorage);
+
+    auto kernelThread = constructRaw<Thread>(*allocator, Context{}, std::move(kernelAddressSpace));
+    if (kernelThread == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+
+    auto cpu = Cpu::make(*allocator, kernelThread->context);
     if (!cpu) {
         return std::unexpected(cpu.error());
     }
     
-    return std::expected<Kernel, Error>(std::in_place , rootPageTable, pageMapper, **cpu, allocator, std::move(initrd), framebuffer);
+    auto initrdStart = memoryLayout.identityMapping.translate(memoryLayout.initrdPhysicalAddress);
+    auto memorySource = rlib::MemorySource(initrdStart.ptr<std::byte>(), memoryLayout.initrdSize);
+    auto inputStream = rlib::InputStream(std::move(memorySource));
+    return std::expected<Kernel, Error>(std::in_place, kernelThread, pageMapper, **cpu, allocator, std::move(inputStream), memoryLayout.framebufferStart);
+}
+
+std::expected<std::tuple<AddressSpace, Region*>, Error> Kernel::makeKernelAddressSpace(TableView rootPageTable, MemoryLayout memoryLayout, PageMapper& pageMapper, rlib::Allocator& allocator) {
+    auto addressSpace = AddressSpace::make(pageMapper, allocator);
+    if (!addressSpace) {
+        return std::unexpected(addressSpace.error());
+    }
+
+    // identity map total physical memory
+    constexpr auto identityFlags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
+    auto identityMapRegion = addressSpace->reserve(memoryLayout.identityMapping.translate(0), memoryLayout.totalPhysicalMemory, identityFlags, PageSize::_1GiB);
+    if (!identityMapRegion) {
+        return std::unexpected(identityMapRegion.error());
+    }
+    for (auto physicalAddress = std::uint64_t(0); physicalAddress < memoryLayout.totalPhysicalMemory; physicalAddress += 1_GiB) {
+        auto error = addressSpace->mapPageOfRegion(**identityMapRegion, physicalAddress, physicalAddress / 1_GiB);
+        if (error) {
+            return std::unexpected(*error);
+        } 
+    }
+
+    // map kernel heap
+    constexpr auto heapFlags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
+    auto heapStart = (*identityMapRegion)->start() + (*identityMapRegion)->size();
+    auto heapRegion = addressSpace->allocate(heapStart, IntialHeapSize, heapFlags, PageSize::_4KiB);
+
+    // map kernel code and read-only data
+    constexpr auto kernelCodeFlags = PageFlags::Present;
+    auto kernelCodeRegion = addressSpace->reserve(memoryLayout.kernelCodeStart, memoryLayout.kernelWritableDataStart - memoryLayout.kernelCodeStart, kernelCodeFlags, PageSize::_4KiB);
+    if (!kernelCodeRegion) {
+        return std::unexpected(kernelCodeRegion.error());
+    }
+    for (auto frame = std::size_t(0); frame < (*kernelCodeRegion)->sizeInFrames(); frame++) {
+        auto physicalKernelCodePageEntry = pageMapper.read(rootPageTable, memoryLayout.kernelCodeStart + frame * 4_KiB);
+        if (!physicalKernelCodePageEntry) {
+            return std::unexpected(UnexpectedMemoryLayout);
+        }
+        addressSpace->mapPageOfRegion(**kernelCodeRegion, *physicalKernelCodePageEntry, frame);
+    }
+
+    // map kernel data as non-executable
+    constexpr auto kernelDataFlags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
+    auto kernelDataRegion = addressSpace->reserve(memoryLayout.kernelWritableDataStart, memoryLayout.kernelWritableDataEnd - memoryLayout.kernelWritableDataStart, kernelDataFlags, PageSize::_4KiB);
+    if (!kernelDataRegion) {
+        return std::unexpected(kernelDataRegion.error());
+    }
+    for (auto frame = std::size_t(0); frame < (*kernelDataRegion)->sizeInFrames(); frame++) {
+        auto physicalKernelDataPageEntry = pageMapper.read(rootPageTable, memoryLayout.kernelWritableDataStart + frame * 4_KiB);
+        if (!physicalKernelDataPageEntry) {
+            return std::unexpected(UnexpectedMemoryLayout);
+        }
+        addressSpace->mapPageOfRegion(**kernelDataRegion, *physicalKernelDataPageEntry, frame);
+    }
+
+    // map kernel stack
+    auto kernelStackBottom = VirtualAddress(0 - KernelStackSize);
+    auto kernelStackRegion = addressSpace->reserve(kernelStackBottom, KernelStackSize, kernelDataFlags, PageSize::_4KiB);
+    if (!kernelStackRegion) {
+        return std::unexpected(kernelStackRegion.error());
+    }
+    
+    auto frame = std::size_t(0);
+    for (; frame < (KernelStackSize - memoryLayout.initialKernelStackSize) / 4_KiB; frame++) {
+        auto error = addressSpace->allocatePageOfRegion(**kernelStackRegion, frame);
+        if (error) {
+            return std::unexpected(*error);
+        }
+    }
+    for (; frame < (*kernelStackRegion)->sizeInFrames(); frame++) {
+        auto physicalKernelStackPageEntry = pageMapper.read(rootPageTable, kernelStackBottom + frame * 4_KiB);
+        if (!physicalKernelStackPageEntry) {
+            return std::unexpected(UnexpectedMemoryLayout);
+        }
+        addressSpace->mapPageOfRegion(**kernelStackRegion, *physicalKernelStackPageEntry, frame);
+    }
+
+    // map framebuffer
+    constexpr auto framebufferFlags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
+    auto framebufferRegion = addressSpace->reserve(memoryLayout.framebufferStart, memoryLayout.framebufferSize, framebufferFlags, PageSize::_2MiB);
+    if (!framebufferRegion) {
+        return std::unexpected(framebufferRegion.error());
+    }
+    for (auto frame = std::size_t(0); frame < (*framebufferRegion)->sizeInFrames(); frame++) {
+        auto physicalFramebufferPageEntry = pageMapper.read(rootPageTable, memoryLayout.framebufferStart + frame * 2_MiB);
+        if (!physicalFramebufferPageEntry) {
+            return std::unexpected(UnexpectedMemoryLayout);
+        }
+        addressSpace->mapPageOfRegion(**framebufferRegion, *physicalFramebufferPageEntry, frame);
+    }
+
+    return std::tuple(std::move(*addressSpace), *kernelStackRegion);
 }
 
 
-Kernel::Kernel(TableView addressSpace, PageMapper* pageMapper, Cpu& cpu, rlib::Allocator* allocator, InputStream<MemorySource> initrd, std::uint32_t* framebuffer) :
-    addressSpace(addressSpace),
+Kernel::Kernel(Thread* kernelThread, PageMapper* pageMapper, Cpu& cpu, rlib::Allocator* allocator, InputStream<MemorySource> initrd, std::uint32_t* framebuffer) :
     pageMapper(std::move(pageMapper)),
     cpu(&cpu),
     allocator(std::move(allocator)),
     framebuffer(framebuffer)
 {
-    cpu.growStack(addressSpace, 64_KiB, *pageMapper);
-    
+    threads.push_front(*kernelThread);
+
     auto elfStream = UStar::lookup(initrd, "serial.elf"_sv);
     if (!elfStream) {
         panic("Cannot find service");
     }
-    loadProcess(*elfStream);
+    auto serviceThread = loadProcess(*elfStream);
+    if (!serviceThread) {
+        panic("Cannot load service");
+    }
+    service = *serviceThread;
 }
 
 
 void Kernel::run() {
-    HardwareInterrupt interruptBuffer[Cpu::InterruptBufferSize];
-    Message messageBuffer[Cpu::MessageBufferSize];
+    HardwareInterrupt interruptBuffer[InterruptBufferSize];
+    Message messageBuffer[MessageBufferSize];
     cpu->registerObserver(*this);
-    cpu->scheduleThread(*service);
+    scheduleThread(*service);
 
     while (true) {
         auto interruptEnd = interrupts.popAll(interruptBuffer);
@@ -76,24 +201,44 @@ void Kernel::run() {
         auto messageEnd = mailbox.popAll(messageBuffer);
         for (auto message = messageBuffer; message != messageEnd; message++) {
             // Every message is a kill-thread message
-            cpu->killThread(*allocator, *message->sender);    
+           killThread(*allocator, *message->origin);    
         }
     }
 }
 
-std::optional<Error> Kernel::loadProcess(InputStream<MemorySource>& elfStream) {
+std::expected<Thread*, rlib::Error> Kernel::createThread(AddressSpace addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop) {
+    auto thread = Thread::make(*allocator, std::move(addressSpace), entryPoint, stackTop);
+    if (!thread) {
+        return std::unexpected(thread.error());
+    }
+
+    threads.push_front(**thread);
+
+    return thread;
+}
+
+void Kernel::killThread(rlib::Allocator& allocator, Thread& thread) {
+    threads.remove(thread);
+    rlib::destruct(&thread, allocator);
+}
+
+void Kernel::scheduleThread(Thread& thread) {
+    cpu->scheduleContext(thread.context);
+}
+
+std::expected<Thread*, Error> Kernel::loadProcess(InputStream<MemorySource>& elfStream) {
     auto parsedElf = Elf::parseElf(elfStream, *allocator);
     if (!parsedElf) {
-        return parsedElf.error();
+        return std::unexpected(parsedElf.error());
     }
 
     auto processAddressSpace = AddressSpace::make(*pageMapper, *allocator);
     if (!processAddressSpace) {
-        return processAddressSpace.error();
+        return std::unexpected(processAddressSpace.error());
     }
     
     // Map kernel into process address space.
-    processAddressSpace->shallowCopyMapping(addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF));
+    processAddressSpace->shallowCopyRootMapping(kernelThread()->addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF));
 
     for (const auto& segment : parsedElf->segments) {
         if (segment.type != Elf::Segment::Type::Load) {
@@ -101,7 +246,7 @@ std::optional<Error> Kernel::loadProcess(InputStream<MemorySource>& elfStream) {
         }
 
         if (segment.memorySize < segment.fileSize) {
-            return InvalidSegmentSize;
+            return std::unexpected(InvalidSegmentSize);
         }
 
         auto flags = PageFlags::Present | PageFlags::UserAccessible;
@@ -114,7 +259,7 @@ std::optional<Error> Kernel::loadProcess(InputStream<MemorySource>& elfStream) {
         }
         auto region = processAddressSpace->reserve(segment.virtualAddress, segment.fileSize, flags, PageSize::_4KiB);
         if (region == nullptr) {
-            return OutOfPhysicalMemory;
+            return std::unexpected(OutOfPhysicalMemory);
         }
 
         elfStream.seek(segment.fileOffset);
@@ -124,17 +269,17 @@ std::optional<Error> Kernel::loadProcess(InputStream<MemorySource>& elfStream) {
         for (auto chunk : segmentStreamRange | std::views::chunk(4_KiB)) {
             auto frame = pageMapper->allocate();
             if (!frame) {
-                return frame.error();
+                return std::unexpected(frame.error());
             }
             auto destination = reinterpret_cast<std::byte*>(frame->ptr);
             auto copyResult = std::ranges::copy(chunk, destination);
             if (static_cast<std::size_t>(copyResult.out - destination) < segment.fileSize) {
-                return CannotCopySegment;
+                return std::unexpected(CannotCopySegment);
             }
             // Map the region into the process address space.
-            auto error = processAddressSpace->mapPage(**region, frame->physicalAddress, pageIndex);
+            auto error = processAddressSpace->mapPageOfRegion(**region, frame->physicalAddress, pageIndex);
             if (error) {
-                return CannotMapProcessMemory;
+                return std::unexpected(CannotMapProcessMemory);
             }
             pageIndex++;
             // TODO: Allocate more pages and initialize to zero if memorySize > fileSize.
@@ -143,13 +288,18 @@ std::optional<Error> Kernel::loadProcess(InputStream<MemorySource>& elfStream) {
         }
     }
 
-    auto thread = cpu->createThread(*allocator, std::move(*processAddressSpace), parsedElf->startAddress, 64_KiB, Context::Flags::Type(0));
-    if (!thread) {
-        panic("Cannot create service thread");
+    constexpr auto stackBottom = 0x8000'0000'0000 - 64_KiB;
+    auto stackFlags = PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible | PageFlags::NoExecute;
+    auto stack = processAddressSpace->allocate(stackBottom, 64_KiB, stackFlags, PageSize::_4KiB);
+    if (!stack) {
+        return std::unexpected(stack.error());
     }
-    service = *thread;
+    auto thread = createThread(std::move(*processAddressSpace), parsedElf->startAddress, 0x8000'0000'0000);
+    if (!thread) {
+        return std::unexpected(thread.error());
+    }
 
-    return {};
+    return thread;
 }
 
 void Kernel::onInterrupt(std::uint8_t Irq) {
@@ -159,9 +309,16 @@ void Kernel::onInterrupt(std::uint8_t Irq) {
     }
 }
 
-void Kernel::onSyscall(Thread* sender) {
-    auto result = mailbox.push(Message{sender});
+Context& Kernel::onSyscall(Context& sender) {
+    auto origin = Thread::fromContext(sender);
+    auto result = mailbox.push(Message{origin});
     if (!result) {
         panic("Message buffer overflow");
     }
+
+    return kernelThread()->context;
+}
+
+Thread* Kernel::kernelThread() const {
+    return threads.back();
 }
