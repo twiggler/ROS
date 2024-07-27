@@ -64,10 +64,16 @@ std::expected<Kernel, Error> Kernel::make(MemoryLayout memoryLayout, std::byte* 
         return std::unexpected(cpu.error());
     }
     
+    auto mailbox = mpmcBoundedQueue<Message>::make(MessageBufferSize, *allocator);
+    if (mailbox == nullptr) {
+        return std::unexpected(OutOfMemoryError);
+    }
+    
     auto initrdStart = memoryLayout.identityMapping.translate(memoryLayout.initrdPhysicalAddress);
     auto memorySource = rlib::MemorySource(initrdStart.ptr<std::byte>(), memoryLayout.initrdSize);
     auto inputStream = rlib::InputStream(std::move(memorySource));
-    return std::expected<Kernel, Error>(std::in_place, kernelThread, pageMapper, **cpu, allocator, std::move(inputStream), memoryLayout.framebufferStart);
+
+    return std::expected<Kernel, Error>(std::in_place, kernelThread, pageMapper, **cpu, allocator, std::move(inputStream), std::move(*mailbox), memoryLayout.framebufferStart);
 }
 
 std::expected<std::tuple<AddressSpace, Region*>, Error> Kernel::makeKernelAddressSpace(TableView rootPageTable, MemoryLayout memoryLayout, PageMapper& pageMapper, rlib::Allocator& allocator) {
@@ -92,7 +98,7 @@ std::expected<std::tuple<AddressSpace, Region*>, Error> Kernel::makeKernelAddres
     // map kernel heap
     constexpr auto heapFlags = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
     auto heapStart = (*identityMapRegion)->start() + (*identityMapRegion)->size();
-    auto heapRegion = addressSpace->allocate(heapStart, IntialHeapSize, heapFlags, PageSize::_4KiB);
+    auto heapRegion = addressSpace->allocate(heapStart, KernelHeapSize, heapFlags, PageSize::_4KiB);
 
     // map kernel code and read-only data
     constexpr auto kernelCodeFlags = PageFlags::Present;
@@ -162,10 +168,11 @@ std::expected<std::tuple<AddressSpace, Region*>, Error> Kernel::makeKernelAddres
 }
 
 
-Kernel::Kernel(Thread* kernelThread, PageMapper* pageMapper, Cpu& cpu, rlib::Allocator* allocator, InputStream<MemorySource> initrd, std::uint32_t* framebuffer) :
+Kernel::Kernel(Thread* kernelThread, PageMapper* pageMapper, Cpu& cpu, rlib::Allocator* allocator, InputStream<MemorySource> initrd, rlib::OwningPointer<mpmcBoundedQueue<Message>> mailbox, std::uint32_t* framebuffer) :
     pageMapper(std::move(pageMapper)),
     cpu(&cpu),
     allocator(std::move(allocator)),
+    mailbox(std::move(mailbox)),
     framebuffer(framebuffer)
 {
     threads.push_front(*kernelThread);
@@ -184,12 +191,11 @@ Kernel::Kernel(Thread* kernelThread, PageMapper* pageMapper, Cpu& cpu, rlib::All
 
 void Kernel::run() {
     HardwareInterrupt interruptBuffer[InterruptBufferSize];
-    Message messageBuffer[MessageBufferSize];
     cpu->registerObserver(*this);
     scheduleThread(*service);
 
     while (true) {
-        auto interruptEnd = interrupts.popAll(interruptBuffer);
+        auto interruptEnd = interrupts.dequeueAll(interruptBuffer);
         // Process Interrupts.
         for (auto interrupt = interruptBuffer; interrupt != interruptEnd; interrupt++) {
              // Remove this when keyboard driver is implemented.
@@ -198,8 +204,8 @@ void Kernel::run() {
             } 
         }
 
-        auto messageEnd = mailbox.popAll(messageBuffer);
-        for (auto message = messageBuffer; message != messageEnd; message++) {
+        std::optional<Message> message; 
+        while ((message = mailbox->dequeue())) {
             // Every message is a kill-thread message
            killThread(*allocator, *message->origin);    
         }
@@ -238,6 +244,9 @@ std::expected<Thread*, Error> Kernel::loadProcess(InputStream<MemorySource>& elf
     }
     
     // Map kernel into process address space.
+    // This leaves the kernel open to Meltdown and Spectre attacks, especially since the kernel identity maps all physical memory.
+    // Implement KPTI to fix this.
+    // Alternatively, mininmize the amount of kernel code and data that is mapped into the process address space.
     processAddressSpace->shallowCopyRootMapping(kernelThread()->addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF));
 
     for (const auto& segment : parsedElf->segments) {
@@ -303,7 +312,7 @@ std::expected<Thread*, Error> Kernel::loadProcess(InputStream<MemorySource>& elf
 }
 
 void Kernel::onInterrupt(std::uint8_t Irq) {
-    auto result = interrupts.push(HardwareInterrupt{Irq});
+    auto result = interrupts.enqueue(HardwareInterrupt{Irq});
     if (!result) {
         panic("Interrupt buffer overflow");
     }
@@ -311,7 +320,7 @@ void Kernel::onInterrupt(std::uint8_t Irq) {
 
 Context& Kernel::onSyscall(Context& sender) {
     auto origin = Thread::fromContext(sender);
-    auto result = mailbox.push(Message{origin});
+    auto result = mailbox->enqueue(Message{origin});
     if (!result) {
         panic("Message buffer overflow");
     }

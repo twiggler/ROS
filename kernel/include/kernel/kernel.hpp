@@ -58,7 +58,7 @@ public:
     
     static std::expected<Kernel, rlib::Error> make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView rootPageTable);
 
-    Kernel(Thread* kernelThread, PageMapper* pageMapper, Cpu& cpu, rlib::Allocator* allocator, rlib::InputStream<rlib::MemorySource> initrd, std::uint32_t* framebuffer);
+    Kernel(Thread* kernelThread, PageMapper* pageMapper, Cpu& cpu, rlib::Allocator* allocator, rlib::InputStream<rlib::MemorySource> initrd, rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>> mailbox, std::uint32_t* framebuffer);
 
     Kernel(const Kernel&) = delete;
 
@@ -81,6 +81,7 @@ private:
     static constexpr auto KernelStackSize = std::size_t(64_KiB);
     static constexpr auto InterruptBufferSize = std::size_t(256);
     static constexpr auto MessageBufferSize = std::size_t(256);
+    static constexpr auto KernelHeapSize = std::size_t(1_MiB);
 
     static std::expected<std::tuple<AddressSpace, Region*>, rlib::Error> makeKernelAddressSpace(TableView rootPageTable, MemoryLayout memoryLayout, PageMapper& pageMapper, rlib::Allocator& allocator);
     
@@ -89,14 +90,14 @@ private:
     // TODO: Implement type erased InputStream
     std::expected<Thread*, rlib::Error> loadProcess(rlib::InputStream<rlib::MemorySource>& process);
 
-    PageMapper*                                                 pageMapper;
-    Cpu*                                                        cpu;
-    rlib::Allocator*                                            allocator;
-    std::uint32_t*                                              framebuffer;  
-    rlib::RingBuffer<HardwareInterrupt, InterruptBufferSize>    interrupts;
-    rlib::RingBuffer<Message, MessageBufferSize>                mailbox; // This supports only a single producer i.e. core
-    ThreadList                                                  threads;
-    Thread*                                                     service;
+    PageMapper*                                                         pageMapper;
+    Cpu*                                                                cpu;
+    rlib::Allocator*                                                    allocator;
+    rlib::spscBoundedQueue<HardwareInterrupt, InterruptBufferSize>      interrupts;
+    rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>>                mailbox; 
+    std::uint32_t*                                                      framebuffer;  
+    ThreadList                                                          threads;
+    Thread*                                                             service;
 };
 
 

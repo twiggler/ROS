@@ -21,4 +21,10 @@ private:
     const ErrorCategory* category;
 };
 
+struct CommonCategory : ErrorCategory {};
+inline constexpr auto commonCategory = CommonCategory{};
+
+inline constexpr auto InvalidArgument = Error{-1, &commonCategory};
+
+
 } // namespace rlib
