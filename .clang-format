@@ -1,0 +1,40 @@
+# Format Style Options - Created with Clang Power Tools
+---
+AccessModifierOffset: -4
+AllowShortIfStatementsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AlignConsecutiveDeclarations: true
+AlignConsecutiveAssignments: true
+AlignOperands: true
+AlignAfterOpenBracket: BlockIndent
+AllowShortEnumsOnASingleLine: false 
+BreakBeforeBraces: Custom
+BraceWrapping:
+  SplitEmptyFunction: false
+  AfterFunction: true
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeTernaryOperators: false
+BreakConstructorInitializers: AfterColon
+AlwaysBreakTemplateDeclarations : Yes
+BreakAfterAttributes: Never 
+BinPackArguments: false
+BinPackParameters: false 
+ColumnLimit: 120
+CompactNamespaces: true
+Cpp11BracedListStyle: true
+DerivePointerAlignment: true
+EmptyLineBeforeAccessModifier: Leave
+IndentWidth: 4
+IndentRequires: false
+ContinuationIndentWidth: 4
+MaxEmptyLinesToKeep: 2
+NamespaceIndentation: All
+PackConstructorInitializers: NextLine
+PointerAlignment: Middle
+ReflowComments: false
+SortIncludes: false
+SpaceAfterTemplateKeyword: false
+SpaceBeforeCpp11BracedList: false
+SpaceInEmptyBlock: false
+Standard: c++20
+...

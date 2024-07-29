@@ -2,6 +2,7 @@
 
 extern "C" void syscall();
 
-void main() {
+void main()
+{
     syscall();
 }

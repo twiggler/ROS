@@ -1,28 +1,29 @@
 #include <libr/icxxabi.hpp>
- 
+
 extern "C" {
- 
+
 atexit_func_entry_t __atexit_funcs[ATEXIT_MAX_FUNCS];
-uarch_t __atexit_func_count = 0;
- 
+uarch_t             __atexit_func_count = 0;
+
 void *__dso_handle = 0; // Optimally, you should remove the '= 0' part and define this in your asm script.
- 
+
 int __cxa_atexit(void (*f)(void *), void *objptr, void *dso)
 {
-	if (__atexit_func_count >= ATEXIT_MAX_FUNCS) {return -1;};
-	__atexit_funcs[__atexit_func_count].destructor_func = f;
-	__atexit_funcs[__atexit_func_count].obj_ptr = objptr;
-	__atexit_funcs[__atexit_func_count].dso_handle = dso;
-	__atexit_func_count++;
-	return 0;
+    if (__atexit_func_count >= ATEXIT_MAX_FUNCS) {
+        return -1;
+    };
+    __atexit_funcs[__atexit_func_count].destructor_func = f;
+    __atexit_funcs[__atexit_func_count].obj_ptr         = objptr;
+    __atexit_funcs[__atexit_func_count].dso_handle      = dso;
+    __atexit_func_count++;
+    return 0;
 };
- 
+
 void __cxa_finalize(void *f)
 {
-	uarch_t i = __atexit_func_count;
-	if (!f)
-	{
-		/*
+    uarch_t i = __atexit_func_count;
+    if (!f) {
+        /*
 		* According to the Itanium C++ ABI, if __cxa_finalize is called without a
 		* function ptr, then it means that we should destroy EVERYTHING
 		*
@@ -33,11 +34,9 @@ void __cxa_finalize(void *f)
 		* an object file exist at runtime in a particular application. This can be used to tell 
 		* when a shared object is no longer in use. It is one of many methods, however.
 		**/
-		while (i--)
-		{
-			if (__atexit_funcs[i].destructor_func)
-			{
-				/* ^^^ That if statement is a safeguard...
+        while (i--) {
+            if (__atexit_funcs[i].destructor_func) {
+                /* ^^^ That if statement is a safeguard...
 				* To make sure we don't call any entries that have already been called and unset at runtime.
 				* Those will contain a value of 0, and calling a function with value 0
 				* will cause undefined behaviour. Remember that linear address 0, 
@@ -47,15 +46,14 @@ void __cxa_finalize(void *f)
 				* map in some trash, or a blank page, or something stupid like that.
 				* This will result in the processor executing trash, and...we don't want that.
 				**/
-				(*__atexit_funcs[i].destructor_func)(__atexit_funcs[i].obj_ptr);
-			};
-		};
-		return;
-	};
- 
-	while (i--)
-	{
-		/*
+                (*__atexit_funcs[i].destructor_func)(__atexit_funcs[i].obj_ptr);
+            };
+        };
+        return;
+    };
+
+    while (i--) {
+        /*
 		* The ABI states that multiple calls to the __cxa_finalize(destructor_func_ptr) function
 		* should not destroy objects multiple times. Only one call is needed to eliminate multiple
 		* entries with the same address.
@@ -71,9 +69,8 @@ void __cxa_finalize(void *f)
 		* being called and removed one place down in the list, so as to cover up the hole.
 		* Otherwise, whenever a destructor is called and removed, an entire space in the table is wasted.
 		**/
-		if (__atexit_funcs[i].destructor_func == f)
-		{
-			/* 
+        if (__atexit_funcs[i].destructor_func == f) {
+            /* 
 			* Note that in the next line, not every destructor function is a class destructor.
 			* It is perfectly legal to register a non class destructor function as a simple cleanup
 			* function to be called on program termination, in which case, it would not NEED an
@@ -83,15 +80,14 @@ void __cxa_finalize(void *f)
 			* In the case of a function that takes no arguments, it will simply be ignore within the
 			* function itself. No worries.
 			**/
-			(*__atexit_funcs[i].destructor_func)(__atexit_funcs[i].obj_ptr);
-			__atexit_funcs[i].destructor_func = 0;
- 
-			/*
+            (*__atexit_funcs[i].destructor_func)(__atexit_funcs[i].obj_ptr);
+            __atexit_funcs[i].destructor_func = 0;
+
+            /*
 			* Notice that we didn't decrement __atexit_func_count: this is because this algorithm
 			* requires patching to deal with the FIXME outlined above.
 			**/
-		};
-	};
+        };
+    };
 };
- 
 };
