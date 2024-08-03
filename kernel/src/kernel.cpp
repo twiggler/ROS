@@ -1,5 +1,5 @@
-#include "kernel/paging.hpp"
 #include "kernel/kernel.hpp"
+#include "kernel/paging.hpp"
 #include <kernel/panic.hpp>
 #include <libr/ustar.hpp>
 #include <libr/pointer.hpp>
@@ -35,13 +35,15 @@ Thread::make(rlib::Allocator& allocator, AddressSpace addressSpace, std::uint64_
 std::expected<Kernel, Error>
 Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView rootPageTable)
 {
-    auto pageFrameAllocator = PageFrameAllocator(*memoryLayout.freeMemoryBlocks, memoryLayout.identityMapping);
     // A stable reference to initialAllocator is required for construction the kernel address space (in theory; in practice, the kernel address space is never deallocated).
     // Assume initialHeapStorage is aligned for BumpAllocator.
     auto initialAllocator = ::new (initialHeapStorage)
         BumpAllocator(initialHeapStorage + sizeof(BumpAllocator), IntialHeapSize - sizeof(BumpAllocator));
+    auto pageFrameAllocator = PageFrameAllocator::make(
+        *memoryLayout.freeMemoryBlocks, memoryLayout.identityMapping, 4_KiB, *initialAllocator
+    );
     auto pageMapper =
-        constructRaw<PageMapper>(*initialAllocator, memoryLayout.identityMapping, std::move(pageFrameAllocator));
+        constructRaw<PageMapper>(*initialAllocator, memoryLayout.identityMapping, std::move(*pageFrameAllocator));
     if (pageMapper == nullptr) {
         return std::unexpected(OutOfPhysicalMemory);
     }
@@ -61,6 +63,9 @@ Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView
     };
     using AllocatorType   = std::remove_pointer_t<decltype(makeFallbackAllocator(std::declval<void*>()))>;
     auto allocatorStorage = initialAllocator->allocate(sizeof(AllocatorType), alignof(AllocatorType));
+    if (allocatorStorage == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
     auto allocator        = makeFallbackAllocator(allocatorStorage);
 
     auto kernelThread = constructRaw<Thread>(*allocator, Context{}, std::move(kernelAddressSpace));
@@ -82,6 +87,12 @@ Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView
     auto memorySource = rlib::MemorySource(initrdStart.ptr<std::byte>(), memoryLayout.initrdSize);
     auto inputStream  = rlib::InputStream(std::move(memorySource));
 
+    // WORKAROUND: work around undefined reference for construct by upcasting allocator (compiler bug?) 
+    auto threadList = ThreadList::make(*static_cast<rlib::Allocator*>(allocator));
+    if (!threadList) {
+        return std::unexpected(threadList.error());
+    }
+
     return std::expected<Kernel, Error>(
         std::in_place,
         kernelThread,
@@ -89,6 +100,7 @@ Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView
         **cpu,
         allocator,
         std::move(inputStream),
+        std::move(*threadList),
         std::move(*mailbox),
         memoryLayout.framebufferStart
     );
@@ -213,16 +225,18 @@ Kernel::Kernel(
     Cpu&                                           cpu,
     rlib::Allocator*                               allocator,
     InputStream<MemorySource>                      initrd,
+    ThreadList                                     threads,
     rlib::OwningPointer<mpmcBoundedQueue<Message>> mailbox,
     std::uint32_t*                                 framebuffer
 ) :
-    pageMapper(std::move(pageMapper)),
+    pageMapper(pageMapper),
     cpu(&cpu),
-    allocator(std::move(allocator)),
+    allocator(allocator),
+    threads(std::move(threads)),
     mailbox(std::move(mailbox)),
     framebuffer(framebuffer)
 {
-    threads.push_front(*kernelThread);
+    this->threads.push_front(*kernelThread);
 
     auto elfStream = UStar::lookup(initrd, "serial.elf"_sv);
     if (!elfStream) {

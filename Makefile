@@ -4,5 +4,8 @@ all: loader
 loader kernel libr services:
 	${MAKE} --directory=$@ $(TARGET)
 
+services:
+	${MAKE} --directory=services TARGET=$(TARGET)
+
 loader: kernel libr services
 kernel: libr

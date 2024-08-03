@@ -3,6 +3,7 @@
 #include "paging.hpp"
 #include <libr/allocator.hpp>
 #include <libr/stream.hpp>
+#include <libr/intrusive/list.hpp>
 #include "cpu.hpp"
 #include <libr/elf.hpp>
 
@@ -55,7 +56,9 @@ struct MemoryLayout {
 
 class Kernel : public CpuObserver {
 public:
-    static constexpr auto IntialHeapSize = std::size_t(512);
+    using ThreadList = rlib::intrusive::ListWithNodeMember<Thread, &Thread::listNode>;
+
+    static constexpr auto IntialHeapSize = std::size_t(4_KiB);
 
     static std::expected<Kernel, rlib::Error>
     make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView rootPageTable);
@@ -66,6 +69,7 @@ public:
         Cpu&                                                 cpu,
         rlib::Allocator*                                     allocator,
         rlib::InputStream<rlib::MemorySource>                initrd,
+        ThreadList                                           threads,
         rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>> mailbox,
         std::uint32_t*                                       framebuffer
     );
@@ -88,7 +92,6 @@ public:
     virtual Context& onSyscall(Context& sender) final;
 
 private:
-    using ThreadList                          = rlib::intrusive::ListWithNodeMember<Thread, &Thread::listNode>;
     static constexpr auto KernelStackSize     = std::size_t(64_KiB);
     static constexpr auto InterruptBufferSize = std::size_t(256);
     static constexpr auto MessageBufferSize   = std::size_t(256);
@@ -107,8 +110,8 @@ private:
     Cpu*                                                           cpu;
     rlib::Allocator*                                               allocator;
     rlib::spscBoundedQueue<HardwareInterrupt, InterruptBufferSize> interrupts;
+    ThreadList                                                     threads;
     rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>>           mailbox;
     std::uint32_t*                                                 framebuffer;
-    ThreadList                                                     threads;
     Thread*                                                        service;
 };

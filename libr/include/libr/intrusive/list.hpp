@@ -1,150 +1,160 @@
 #pragma once
 
+#include "common.hpp"
+#include <libr/allocator.hpp>
+#include <libr/pointer.hpp>
+#include <expected>
+
 namespace rlib::intrusive {
 
+    // Node of a circular doubly linked list.
+    // Rationale: By implementing basic operations in the node itself, it can be composed with other data structures.
     template<class T>
-    struct ListNode {
-        T* next = nullptr;
-        T* prev = nullptr;
+    class ListNode {
+    public:
+        ListNode() : _next(this), _prev(this) {}
+
+        void remove()
+        {
+            _prev->_next = _next;
+            _next->_prev = _prev;
+            _next = _prev = this;
+            _owner         = nullptr;
+        }
+
+        void insertAfter(ListNode& after, T& value)
+        {
+            remove();
+            _next        = after._next;
+            _prev        = &after;
+            _next->_prev = this;
+            after._next  = this;
+            _owner       = &value;
+        }
+
+        bool isHead() const { return _owner == nullptr; }
+
+        ListNode* next() const { return _next->isHead() ? nullptr : _next; }
+
+        ListNode* prev() const { return _next->isHead() ? nullptr : _prev; }
+
+        T* owner() { return _owner; }
+
+    private:
+        ListNode* _next;
+        ListNode* _prev;
+
+        // Rationale:
+        // Storing a pointer to the parent element is expensive.
+        // Technically, it is possible to  obtain an element pointer from a node pointer instead.
+        // However, this would require a downcast to the element type in the case of inheriting from the ListNode.
+        // In the case of the ListNode being a member of the element, ABI specific offset calculations are necessary.
+        // Using of the offsetof macro leads to undefined behavior if the parent element is not a standard layout type.
+        //
+        // Consider optimizing memory usage by removing owner if the parent element is a standard layout type.
+        T* _owner = nullptr;
     };
 
-
-    template<class T>
-    struct NodeFromBase {
-        static ListNode<T>& get(T* element) { return *element; }
-    };
-
-    template<class T, ListNode<T> T::*Node>
-    struct NodeFromMember {
-        static ListNode<T>& get(T* element) { return element->*Node; }
-    };
-
-    template<typename T, class NodeGetter = NodeFromBase<T>>
+    template<typename T>
     class ListIterator {
     public:
         using value_type      = T;
         using difference_type = std::ptrdiff_t;
 
-        ListIterator() : element(nullptr) {}
+        ListIterator() : node(nullptr) {}
 
-        explicit ListIterator(T* node) : element(node) {}
+        explicit ListIterator(ListNode<T>* node) : node(node) {}
 
-        const T& operator*() const { return *element; }
+        const T& operator*() const { return *node->_owner(); }
 
-        const T* operator->() const { return element; }
+        const T* operator->() const { return node->_owner(); }
 
         ListIterator& operator++()
         {
-            element = NodeGetter::get(element).next;
+            node = node->next();
             return *this;
         }
 
         ListIterator& operator--()
         {
-            element = NodeGetter::get(element).prev;
+            node = node->prev();
             return *this;
         }
 
         ListIterator operator++(int)
         {
-            auto current = ListIterator(*this);
-            element      = NodeGetter::get(element).next;
+            auto current = ListIterator(node);
+            node         = node->next();
 
             return current;
         }
 
         ListIterator operator--(int)
         {
-            auto current = ListIterator(*this);
-            element      = NodeGetter::get(element).previous;
+            auto current = ListIterator(node);
+            node         = node->prev();
 
             return current;
         }
 
-        bool operator==(const ListIterator& other) const { return element == other.element; }
+        bool operator==(const ListIterator& other) const { return node == other.node; }
 
     private:
-        T* element;
+        ListNode<T>* node;
     };
 
-    template<typename T, class NodeGetter = NodeFromBase<T>>
+    template<typename T, class NodeGetter = NodeFromBase<T, ListNode>>
     class List {
     public:
-        List() : head(nullptr), tail(nullptr) {}
+        template<IsAllocator Alloc>
+    static std::expected<List, Error> make(Alloc& allocator)
+        {
+            auto head = construct<ListNode<T>>(allocator);
+            if (head == nullptr) {
+                return std::unexpected(OutOfMemoryError);
+            }
 
-        List(List&& other) : head(other.head), tail(other.tail) { other.head = other.tail = nullptr; }
+            return List(std::move(head));
+        }
 
         void push_front(T& element)
         {
-            NodeGetter::get(&element).next = head;
-            NodeGetter::get(&element).prev = nullptr;
-            if (head != nullptr) {
-                NodeGetter::get(head).prev = &element;
-            } else {
-                tail = &element;
-            }
-            head = &element;
+            auto& node = NodeGetter::get(&element);
+            node.insertAfter(*head, element);
         }
 
         T* pop_front()
         {
-            if (head == nullptr) {
+            auto node = head->next();
+            if (node == nullptr) {
                 return nullptr;
             }
+            auto element = node->owner();
+            node->remove();
 
-            auto element = head;
-            head         = NodeGetter::get(element).next;
-
-            if (head != nullptr) {
-                NodeGetter::get(head).prev = nullptr;
-            } else {
-                tail = nullptr;
-            }
-
-            NodeGetter::get(element).next = NodeGetter::get(element).prev = nullptr;
             return element;
         }
 
-        void remove(T& element)
-        {
-            if (head == nullptr) {
-                return;
-            }
+        void remove(T& element) { NodeGetter::get(&element).remove(); }
 
-            if (&element == head) {
-                head = NodeGetter::get(head).next;
-                if (head != nullptr) {
-                    NodeGetter::get(head).prev = nullptr;
-                }
-            } else if (&element == tail) {
-                tail = NodeGetter::get(tail).prev;
-                if (tail != nullptr) {
-                    NodeGetter::get(tail).next = nullptr;
-                }
-            } else {
-                auto next                  = NodeGetter::get(&element).next;
-                auto prev                  = NodeGetter::get(&element).prev;
-                NodeGetter::get(prev).next = next;
-                NodeGetter::get(next).prev = prev;
-            }
-
-            NodeGetter::get(&element).next = NodeGetter::get(&element).prev = nullptr;
-        }
-
-        ListIterator<T> begin() { return ListIterator<T>(head); }
+        ListIterator<T> begin() { return ListIterator<T>(head->next()); }
 
         ListIterator<T> end() { return ListIterator<T>(nullptr); }
 
-        bool empty() const { return head == nullptr; }
+        bool empty() const { return head->next() == nullptr; }
 
-        T* back() const { return tail; }
+        T* front() const { return head->next()->owner(); }
+
+        T* back() const { return head->prev()->owner(); }
 
     private:
-        T* head;
-        T* tail;
+        explicit List(OwningPointer<ListNode<T>> head) : head(std::move(head)) {}
+
+        OwningPointer<ListNode<T>> head;
     };
 
+    // Helper template alias to facilitate the use of List with a member node.
     template<class T, ListNode<T> T::*Node>
-    using ListWithNodeMember = List<T, NodeFromMember<T, Node>>;
+    using ListWithNodeMember = List<T, NodeFromMember<T, ListNode, Node>>;
 
 } // namespace rlib::intrusive

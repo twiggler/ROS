@@ -2,7 +2,6 @@ CPPFLAGS = -g -std=c++23 -Wall -fpic -ffreestanding -fno-stack-protector -fno-ex
 		-I./bootboot/dist/ -I../libr/include -I../kernel/include
 LDFLAGS = -g -nostdlib -L ../libr/build -L ../kernel/build -T link.ld
 LDLIBS = -lkernel -lr 
-DEPS := deps.d
 BUILD_DIR := build
 INITRD_DIR := $(BUILD_DIR)/initrd
 
@@ -20,10 +19,10 @@ $(BUILD_DIR)/kernel.x86_64.elf: $(BUILD_DIR)/main.o ../kernel/build/libkernel.a 
 
 $(BUILD_DIR)/main.o: main.cpp
 	mkdir -p ${@D}
-	g++ $(CPPFLAGS) -MMD -MP -MF $(DEPS) -c -o $@ $<
+	g++ $(CPPFLAGS) -MMD -MP -c $< -o $@ 
 
 .PHONY: clean
 clean:
 	rm -rf $(BUILD_DIR)/*
 
--include ${DEPS}
+-include ${BUILD_DIR}/main.d

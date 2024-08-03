@@ -32,10 +32,22 @@ VirtualAddress IdentityMapping::translate(std::size_t physicalAddress) const
     return physicalAddress + offset;
 }
 
+std::expected<PageFrameAllocator, rlib::Error> PageFrameAllocator::make(
+    rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, std::size_t frameSize, rlib::Allocator& allocator
+)
+{
+    auto freePageList = FreePageList::make(allocator);
+    if (!freePageList) {
+        return std::unexpected(rlib::OutOfMemoryError);
+    }
+
+    return PageFrameAllocator{std::move(*freePageList), memoryMap, identityMapping, frameSize};
+}
+
 PageFrameAllocator::PageFrameAllocator(
-    rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, std::size_t frameSize
+    FreePageList freePages, rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, std::size_t frameSize
 ) :
-    identityMapping(identityMapping), frameSize(frameSize)
+    freePages(std::move(freePages)), identityMapping(identityMapping), frameSize(frameSize)
 {
     for (auto block = memoryMap.next(); block; block = memoryMap.next()) {
         auto alignedBlock = block->align(frameSize);
@@ -379,6 +391,11 @@ bool Region::overlap(const Region& other) const
     return _start <= other.end() && end() >= other._start;
 }
 
+bool Region::operator<(const Region& other) const
+{
+    return end() < other._start;
+}
+
 std::optional<rlib::Error>
 Region::mapPage(TableView tableLevel4, PageMapper& pageMapper, std::uint64_t physicalAddress, std::size_t pageIndex)
 {
@@ -437,12 +454,26 @@ std::expected<AddressSpace, rlib::Error> AddressSpace::make(PageMapper& pageMapp
         return std::unexpected(tableLevel4.error());
     }
 
-    return AddressSpace(pageMapper, *tableLevel4, allocator);
+    auto regions = rlib::intrusive::SkipList<Region>::make(16, allocator, allocator);
+    if (!regions) {
+        return std::unexpected(regions.error());
+    }
+
+    return AddressSpace(pageMapper, *tableLevel4, std::move(*regions), allocator);
 }
 
-AddressSpace::AddressSpace(PageMapper& pageMapper, TableView tableLevel4, rlib::Allocator& allocator) :
-    pageMapper(&pageMapper), tableLevel4(tableLevel4), allocator(&allocator)
+AddressSpace::AddressSpace(
+    PageMapper& pageMapper, TableView tableLevel4, rlib::intrusive::SkipList<Region> regions, rlib::Allocator& allocator
+) :
+    pageMapper(&pageMapper), tableLevel4(tableLevel4), regions(std::move(regions)), allocator(&allocator)
 {}
+
+AddressSpace::AddressSpace(AddressSpace&& other) :
+    pageMapper(other.pageMapper), tableLevel4(other.tableLevel4), regions(std::move(other.regions)), allocator(other.allocator)
+{
+    other.pageMapper = nullptr;
+    other.allocator  = nullptr;
+}	
 
 std::expected<Region*, rlib::Error>
 AddressSpace::reserve(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize)
@@ -451,17 +482,16 @@ AddressSpace::reserve(VirtualAddress start, std::size_t size, PageFlags::Type fl
     auto sizeInFrames    = (size + pageSizeInBytes - 1) / pageSizeInBytes;
     auto region          = Region(start, sizeInFrames, flags, pageSize);
 
-    // This has a complexity of O(n). Optimize using balanced tree or skip list.
-    if (std::ranges::any_of(regions, [&region](const auto& other) { return region.overlap(other); })) {
+    if (regions.find(region) != nullptr) {
         return std::unexpected(VirtualRangeInUse);
     }
 
-    auto regionPtr = rlib::constructRaw<Region>(*allocator, region);
+    auto regionPtr = rlib::constructRaw<Region>(*allocator, std::move(region));
     if (regionPtr == nullptr) {
         return std::unexpected(OutOfPhysicalMemory);
     }
 
-    regions.push_front(*regionPtr);
+    regions.insert(*regionPtr);
     return regionPtr;
 }
 
@@ -494,6 +524,10 @@ std::optional<rlib::Error> AddressSpace::allocatePageOfRegion(Region& region, st
 
 AddressSpace::~AddressSpace()
 {
+    if (pageMapper == nullptr) {
+        return;
+    }
+    
     auto region = regions.pop_front();
     while (region != nullptr) {
         pageMapper->unmapAndDeallocateRange(tableLevel4, region->start(), region->size());

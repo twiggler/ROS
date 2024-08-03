@@ -4,7 +4,7 @@
 #include <libr/allocator.hpp>
 #include <libr/error.hpp>
 #include <libr/pointer.hpp>
-#include <libr/intrusive/list.hpp>
+#include <libr/intrusive/skiplist.hpp>
 #include <libr/type_erasure.hpp>
 #include <optional>
 #include <expected>
@@ -97,17 +97,26 @@ struct FreePage {
 // Uses no memory by storing the stack inside free pages.
 class PageFrameAllocator {
 public:
-    PageFrameAllocator(
-        rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, std::size_t frameSize = 4_KiB
+    static std::expected<PageFrameAllocator, rlib::Error> make(
+        rlib::Iterator<Block>& memoryMap,
+        IdentityMapping        identityMapping,
+        std::size_t            frameSize,
+        rlib::Allocator&       allocator
     );
 
     std::expected<Block, rlib::Error> alloc();
 
     void dealloc(std::uintptr_t physicalAddress);
 private:
-    rlib::intrusive::ListWithNodeMember<FreePage, &FreePage::node> freePages;
-    IdentityMapping                                                identityMapping;
-    std::size_t                                                    frameSize;
+    using FreePageList = rlib::intrusive::ListWithNodeMember<FreePage, &FreePage::node>;
+
+    PageFrameAllocator(
+        FreePageList freePages, rlib::Iterator<Block>& memoryMap, IdentityMapping identityMapping, std::size_t frameSize
+    );
+
+    FreePageList    freePages;
+    IdentityMapping identityMapping;
+    std::size_t     frameSize;
 };
 
 struct PageFlags {
@@ -226,7 +235,7 @@ private:
     PageFrameAllocator frameAllocator;
 };
 
-class Region : rlib::intrusive::ListNode<Region> {
+class Region : rlib::intrusive::SkipListNode<Region> {
 public:
     Region(VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlags::Type pageFlags, PageSize pageSize);
 
@@ -247,9 +256,11 @@ public:
 
     std::size_t sizeInFrames() const;
 
+    bool operator<(const Region& other) const;
+
 private:
-    friend class rlib::intrusive::List<Region>;
-    friend class rlib::intrusive::NodeFromBase<Region>;
+    friend class rlib::intrusive::SkipList<Region>;
+    friend class rlib::intrusive::NodeFromBase<Region, SkipListNode>;
 
     std::size_t pageSizeInBytes() const;
 
@@ -263,9 +274,14 @@ class AddressSpace {
 public:
     static std::expected<AddressSpace, rlib::Error> make(PageMapper& pageMapper, rlib::Allocator& allocator);
 
-    explicit AddressSpace(PageMapper& pageMapper, TableView tableLevel4, rlib::Allocator& allocator);
+    explicit AddressSpace(
+        PageMapper&                       pageMapper,
+        TableView                         tableLevel4,
+        rlib::intrusive::SkipList<Region> regions,
+        rlib::Allocator&                  allocator
+    );
 
-    AddressSpace(AddressSpace&& other) = default;
+    AddressSpace(AddressSpace&& other);
 
     AddressSpace(const AddressSpace&) = delete;
 
@@ -289,8 +305,8 @@ public:
     ~AddressSpace();
 
 private:
-    PageMapper*                   pageMapper;
-    TableView                     tableLevel4;
-    rlib::Allocator*              allocator;
-    rlib::intrusive::List<Region> regions;
+    PageMapper*                       pageMapper;
+    TableView                         tableLevel4;
+    rlib::intrusive::SkipList<Region> regions;
+    rlib::Allocator*                  allocator;
 };
