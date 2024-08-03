@@ -1,6 +1,5 @@
 CPPFLAGS = -g -std=c++23 -Wall -fpic -ffreestanding -fno-stack-protector -fno-exceptions -fno-rtti -nostdlib -mno-red-zone -mgeneral-regs-only
 LDFLAGS = -g -nostdlib
-DEPS := deps.d
 BUILD_DIR := build
 
 $(BUILD_DIR)/serial.elf: $(BUILD_DIR)/serial.o ${BUILD_DIR}/syscall.o
@@ -8,7 +7,7 @@ $(BUILD_DIR)/serial.elf: $(BUILD_DIR)/serial.o ${BUILD_DIR}/syscall.o
 
 $(BUILD_DIR)/serial.o: serial.cpp
 	mkdir -p ${@D}
-	g++ $(CPPFLAGS) -MMD -MP -MF $(DEPS) -c -o $@ $<
+	g++ $(CPPFLAGS) -MMD -MP -c $< -o $@ 
 
 $(BUILD_DIR)/syscall.o: syscall.asm
 	nasm -f elf64 -o $@ $< 
@@ -17,4 +16,4 @@ $(BUILD_DIR)/syscall.o: syscall.asm
 clean:
 	rm -rf $(BUILD_DIR)/*
 
--include ${DEPS}
+-include ${BUILD_DIR}/serial.d
