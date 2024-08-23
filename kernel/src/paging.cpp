@@ -10,20 +10,11 @@ Block Block::align(std::size_t alignment) const
     return {alignedStartAddress, alignedSize <= size ? alignedSize : 0};
 }
 
-Block Block::take(std::size_t amount) const
-{
-    return amount <= size ? Block{startAddress + amount, size - amount} : Block{0, 0};
-}
-
-Block Block::resize(std::size_t newSize) const
-{
-    return Block{startAddress, newSize};
-}
-
 std::uintptr_t Block::endAddress() const
 {
     return startAddress + size;
 }
+
 
 IdentityMapping::IdentityMapping(std::size_t offset) : offset(offset) {}
 
@@ -64,7 +55,7 @@ std::expected<Block, rlib::Error> PageFrameAllocator::alloc()
         return std::unexpected(OutOfPhysicalMemory);
     }
 
-    auto freePage = freePages.pop_front();
+    auto freePage = freePages.popFront();
     return Block{freePage->physicalAddress, frameSize};
 }
 
@@ -72,7 +63,7 @@ void PageFrameAllocator::dealloc(std::uintptr_t physicalAddress)
 {
     auto virtualAddress = identityMapping.translate(physicalAddress);
     auto freePage       = ::new (virtualAddress.ptr()) FreePage{physicalAddress, {}};
-    freePages.push_front(*freePage);
+    freePages.pushFront(*freePage);
 }
 
 TableEntryView::TableEntryView(std::uint64_t& entry) : entry(&entry) {}
@@ -386,14 +377,9 @@ Region::Region(VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlag
     _start(virtualAddress), _sizeInFrames(sizeInFrames), pageFlags(pageFlags), _pageSize(pageSize)
 {}
 
-bool Region::overlap(const Region& other) const
-{
-    return _start <= other.end() && end() >= other._start;
-}
-
 bool Region::operator<(const Region& other) const
 {
-    return end() < other._start;
+    return end() <= other._start;
 }
 
 std::optional<rlib::Error>
@@ -429,7 +415,7 @@ VirtualAddress Region::start() const
 
 VirtualAddress Region::end() const
 {
-    return _start + size() - 1;
+    return _start + size();
 }
 
 std::size_t Region::size() const
@@ -447,58 +433,110 @@ std::size_t Region::pageSizeInBytes() const
     return static_cast<std::uint32_t>(_pageSize);
 };
 
-std::expected<AddressSpace, rlib::Error> AddressSpace::make(PageMapper& pageMapper, rlib::Allocator& allocator)
+std::expected<AddressSpace, rlib::Error>
+AddressSpace::make(PageMapper& pageMapper, rlib::Allocator& allocator, std::uintptr_t startAddress, std::size_t size)
 {
     auto tableLevel4 = pageMapper.createPageTable();
     if (!tableLevel4) {
         return std::unexpected(tableLevel4.error());
     }
 
-    auto regions = rlib::intrusive::SkipList<Region>::make(16, allocator, allocator);
+    auto regions = rlib::intrusive::List<Region>::make(allocator);
     if (!regions) {
         return std::unexpected(regions.error());
     }
 
-    return AddressSpace(pageMapper, *tableLevel4, std::move(*regions), allocator);
+    auto memoryResource = rlib::MemoryResource::make(startAddress, size, 16, allocator, allocator, allocator);
+    if (!memoryResource) {
+        return std::unexpected(memoryResource.error());
+    }
+
+    return AddressSpace(pageMapper, *tableLevel4, std::move(*regions), std::move(*memoryResource), allocator);
 }
 
 AddressSpace::AddressSpace(
-    PageMapper& pageMapper, TableView tableLevel4, rlib::intrusive::SkipList<Region> regions, rlib::Allocator& allocator
+    PageMapper&                   pageMapper,
+    TableView                     tableLevel4,
+    rlib::intrusive::List<Region> regions,
+    rlib::MemoryResource          memoryResource,
+    rlib::Allocator&              allocator
 ) :
-    pageMapper(&pageMapper), tableLevel4(tableLevel4), regions(std::move(regions)), allocator(&allocator)
+    pageMapper(&pageMapper),
+    tableLevel4(tableLevel4),
+    regions(std::move(regions)),
+    memoryResource(std::move(memoryResource)),
+    allocator(&allocator)
 {}
 
 AddressSpace::AddressSpace(AddressSpace&& other) :
-    pageMapper(other.pageMapper), tableLevel4(other.tableLevel4), regions(std::move(other.regions)), allocator(other.allocator)
+    pageMapper(other.pageMapper),
+    tableLevel4(other.tableLevel4),
+    regions(std::move(other.regions)),
+    memoryResource(std::move(other.memoryResource)),
+    allocator(other.allocator)
 {
     other.pageMapper = nullptr;
     other.allocator  = nullptr;
-}	
+}
 
 std::expected<Region*, rlib::Error>
 AddressSpace::reserve(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize)
 {
     auto pageSizeInBytes = static_cast<std::uint32_t>(pageSize);
     auto sizeInFrames    = (size + pageSizeInBytes - 1) / pageSizeInBytes;
-    auto region          = Region(start, sizeInFrames, flags, pageSize);
 
-    if (regions.find(region) != nullptr) {
-        return std::unexpected(VirtualRangeInUse);
+    auto beginOfAllocatedSpace = memoryResource.allocate(start, sizeInFrames * pageSizeInBytes);
+    if (!beginOfAllocatedSpace) {
+        return std::unexpected(beginOfAllocatedSpace.error());
     }
 
-    auto regionPtr = rlib::constructRaw<Region>(*allocator, std::move(region));
-    if (regionPtr == nullptr) {
+    auto region = rlib::constructRaw<Region>(*allocator, *beginOfAllocatedSpace, sizeInFrames, flags, pageSize);
+    if (region == nullptr) {
         return std::unexpected(OutOfPhysicalMemory);
     }
+    regions.pushFront(*region);
 
-    regions.insert(*regionPtr);
-    return regionPtr;
+    return region;
+}
+
+std::expected<Region*, rlib::Error> AddressSpace::reserve(std::size_t size, PageFlags::Type flags, PageSize pageSize)
+{
+    auto pageSizeInBytes = static_cast<std::uint32_t>(pageSize);
+    auto sizeInFrames    = (size + pageSizeInBytes - 1) / pageSizeInBytes;
+
+    auto beginOfAllocatedSpace = memoryResource.allocate(sizeInFrames * pageSizeInBytes);
+    if (!beginOfAllocatedSpace) {
+        return std::unexpected(beginOfAllocatedSpace.error());
+    }
+
+    auto region = rlib::constructRaw<Region>(*allocator, *beginOfAllocatedSpace, sizeInFrames, flags, pageSize);
+    if (region == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+    regions.pushFront(*region);
+
+    return region;
 }
 
 std::expected<Region*, rlib::Error>
 AddressSpace::allocate(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize)
 {
     auto region = reserve(start, size, flags, pageSize);
+    if (region == nullptr) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+
+    auto error = region.value()->allocate(tableLevel4, *pageMapper);
+    if (error) {
+        return std::unexpected(*error);
+    }
+
+    return region;
+}
+
+std::expected<Region*, rlib::Error> AddressSpace::allocate(std::size_t size, PageFlags::Type flags, PageSize pageSize)
+{
+    auto region = reserve(size, flags, pageSize);
     if (region == nullptr) {
         return std::unexpected(OutOfPhysicalMemory);
     }
@@ -527,12 +565,12 @@ AddressSpace::~AddressSpace()
     if (pageMapper == nullptr) {
         return;
     }
-    
-    auto region = regions.pop_front();
+
+    auto region = regions.popFront();
     while (region != nullptr) {
         pageMapper->unmapAndDeallocateRange(tableLevel4, region->start(), region->size());
         destruct(region, *allocator);
-        region = regions.pop_front();
+        region = regions.popFront();
     }
 }
 

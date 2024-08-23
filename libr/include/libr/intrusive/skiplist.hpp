@@ -8,13 +8,12 @@
 #include <array>
 #include <functional>
 #include <expected>
+#include "detail/skiplist.hpp"
 
 namespace rlib::intrusive {
 
     template<class T>
-    struct SkipListNode {
-        rlib::OwningPointer<ListNode<T>[]> listNodes;
-    };
+    using SkipListNode = detail::SkipListNode<T>;
 
     struct Deterministic {
         static std::size_t height(std::size_t numberOfElements, std::size_t maxLayers)
@@ -25,23 +24,34 @@ namespace rlib::intrusive {
         }
     };
 
+    template<class T, class M, M T::*Member>
+    struct ProjectMember {
+        M operator()(const T& value) const { return value.*Member; }
+    };
+
+    template<class T, class M, M (T::*MemberFunc)() const>
+    struct ProjectMemberFunc {
+        M operator()(const T& value) const { return (value.*MemberFunc)(); }
+    };
+
     template<
         class T,
-        IsAllocator Alloc     = Allocator,
-        class NodeGetter      = NodeFromBase<T, SkipListNode>,
-        class LessThan        = std::less<T>,
-        class InsertionPolicy = Deterministic>
+        NodeGetter<T, SkipListNode> NG = NodeFromBase<T, SkipListNode>,
+        class Project                  = std::identity,
+        class LessThan                 = std::less<detail::Projected<T, Project>>,
+        IsAllocator Alloc              = Allocator,
+        class InsertionPolicy          = Deterministic>
     struct SkipList {
         template<IsAllocator SAlloc>
         static std::expected<SkipList, Error>
-        make(std::size_t maxLayers, Alloc& listNodeAllocator, SAlloc& skipNodeAllocator)
+        make(std::size_t maxLayers, SAlloc& skipNodeAllocator, Alloc& listNodeAllocator)
         {
             auto head = construct<SkipListNode<T>>(skipNodeAllocator);
             if (head == nullptr) {
                 return std::unexpected(OutOfMemoryError);
             }
-            head->listNodes = construct<ListNode<T>[]>(listNodeAllocator, maxLayers);
-            if (head->listNodes == nullptr) {
+            head->links = construct<ListNode<T>[]>(listNodeAllocator, maxLayers);
+            if (head->links == nullptr) {
                 return std::unexpected(OutOfMemoryError);
             }
 
@@ -51,87 +61,106 @@ namespace rlib::intrusive {
         std::optional<Error> insert(T& value)
         {
             auto  height = InsertionPolicy::height(numberOfElements, maxLayers);
-            auto& layers = NodeGetter::get(&value).listNodes;
-            layers       = construct<ListNode<T>[]>(*allocator, height);
-            if (layers == nullptr) {
+            auto& links  = NG{}(&value).links;
+            links        = construct<ListNode<T>[]>(*allocator, height);
+            if (links == nullptr) {
                 return {OutOfMemoryError};
             }
 
-            auto predecessorSkipNode = head.get();
-            for (auto layer = height; layer > 0; layer--) {
-                auto listNode = &predecessorSkipNode->listNodes[layer - 1];
-                while (listNode->next() != nullptr && LessThan{}(*listNode->next()->owner(), value)) {
-                    listNode = listNode->next();
+            auto lessThan = detail::Comparator<T, LessThan, Project>{};
+            auto cursor   = detail::ListCursor<T, NG>(head.get(), height);
+            do {
+                while (cursor.next() != nullptr && lessThan(*cursor.next(), value)) {
+                    cursor.advance();
                 }
-                predecessorSkipNode = skipNodeFromListNode(listNode);
-                layers[layer - 1].insertAfter(*listNode, value);
-            }
+                cursor.addTo(value);
+            } while (cursor.descend());
 
             numberOfElements++;
             maxHeight = std::max(height, maxHeight);
             return {};
         }
 
-        T* pop_front()
+        T* popFront()
         {
-            auto listNode = head->listNodes[0].next();
-            if (listNode == nullptr) {
+            auto element = head->links[0].next;
+            if (element == nullptr) {
                 return nullptr;
             }
-            auto data = listNode->owner();
 
-            for (auto& listNode : NodeGetter::get(data).listNodes) {
-                listNode.remove();
-            }
+            unlink(*head, *element, NG{});
             numberOfElements--;
 
-            return data;
+            return element;
         }
 
-        void remove(const T& value)
+        void remove(T& value)
         {
-            auto node = NodeGetter::get(value);
-            for (auto& listNode : node.listNodes) {
-                listNode.remove();
-            }
+            unlink(*head, value, NG{});
             numberOfElements--;
         }
 
         template<class U>
-        T* find(const U& value) const
+        auto find(const U& value) const
         {
-            auto predecessorSkipNode = head.get();
-            for (auto layer = std::size_t(maxHeight); layer > 0; layer--) {
-                auto listNode = &predecessorSkipNode->listNodes[layer - 1];
-                while (listNode->next() != nullptr && LessThan{}(*listNode->next()->owner(), value)) {
-                    listNode = listNode->next();
+            auto lessThan = detail::Comparator<T, LessThan, Project>{};
+            auto cursor   = detail::ListCursor<T, NG>(head.get(), maxHeight);
+            do {
+                while (cursor.next() != nullptr && lessThan(*cursor.next(), value)) {
+                    cursor.advance();
                 }
-                if (listNode->next() != nullptr && !LessThan{}(value, *listNode->next()->owner())) {
-                    // If !(a < b) && !(b < a) then a and b are equivalent
-                    return listNode->next()->owner();
-                }
-                predecessorSkipNode = skipNodeFromListNode(listNode);
-            }
+            } while (cursor.descend());
 
-            return nullptr;
+            // !(a < b) && !(b < a) <=> a == b
+            return cursor.next() != nullptr && !lessThan(value, *cursor.next()) ? cursor.toIter() : end();
         }
+
+        template<class U>
+        auto findFirstGreaterOrEqual(const U& value) const
+        {
+            auto lessThan = detail::Comparator<T, LessThan, Project>{};
+            auto cursor   = detail::ListCursor<T, NG>(head.get(), maxHeight);
+            do {
+                while (cursor.next() != nullptr && lessThan(*cursor.next(), value)) {
+                    cursor.advance();
+                }
+            } while (cursor.descend());
+
+            // !(a < b) <=> a >= b
+            return cursor.toIter();
+        }
+
+        template<class U>
+        auto findLastSmallerOrEqual(const U& value) const
+        {
+            auto lessThan = detail::Comparator<T, LessThan, Project>{};
+            auto cursor   = detail::ListCursor<T, NG>(head.get(), maxHeight);
+            do {
+                // a <= b <--> !(b < a)
+                while (cursor.next() != nullptr && !lessThan(value, *cursor.next())) {
+                    cursor.advance();
+                }
+            } while (cursor.descend());
+
+            auto iter = cursor.toIter();
+            return iter == begin() ? end() : std::prev(iter);
+        }
+
+        auto begin() const { return ListIterator(head->links[0], map(NG{}, detail::NodeFromRootLayer{})); }
+
+        auto end() const { return ListIterator(head->links[0].prev, map(NG{}, detail::NodeFromRootLayer{})); }
 
     private:
         SkipList(std::size_t maxLayers, Alloc& allocator, OwningPointer<SkipListNode<T>> header) :
             maxLayers(maxLayers), allocator(&allocator), head(std::move(header))
         {}
 
-        SkipListNode<T>* skipNodeFromListNode(ListNode<T>* node) const
-        {
-            return node->owner() == nullptr ? head.get() : &NodeGetter::get(node->owner());
-        }
-
         const std::size_t              maxLayers;
         Alloc*                         allocator;
         OwningPointer<SkipListNode<T>> head;
         std::size_t                    numberOfElements = 0;
-        // maxheight is the maximum height of any node ever observed
-        std::size_t maxHeight = 0;
+        // maxHeight is the maximum height of any node ever observed
+        std::size_t maxHeight = 1;
     };
 
 } // namespace rlib::intrusive

@@ -18,7 +18,7 @@ $(BUILD_DIR)/kernel.x86_64.elf: $(BUILD_DIR)/main.o ../kernel/build/libkernel.a 
 	ld $(LDFLAGS) -o $@ $^ ${LDLIBS}
 
 $(BUILD_DIR)/main.o: main.cpp
-	mkdir -p ${@D}
+	@mkdir -p ${@D}
 	g++ $(CPPFLAGS) -MMD -MP -c $< -o $@ 
 
 .PHONY: clean

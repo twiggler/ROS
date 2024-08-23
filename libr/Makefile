@@ -10,11 +10,11 @@ $(OBJ_DIR)/libr.a: $(OBJ_FILES)
 	ar rcs $@ $^
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
-	mkdir -p $(@D)
+	@mkdir -p $(@D)
 	g++ $(CPPFLAGS) -MMD -MP -c $< -o $@ 
 
 .PHONY: clean
 clean:
 	rm -rf $(OBJ_DIR)/*
 
--include: $(DEP_FILES)
+-include $(DEP_FILES)

@@ -4,110 +4,140 @@
 #include <libr/allocator.hpp>
 #include <libr/pointer.hpp>
 #include <expected>
+#include <iterator>
 
 namespace rlib::intrusive {
 
-    // Node of a circular doubly linked list.
-    // Rationale: By implementing basic operations in the node itself, it can be composed with other data structures.
+
     template<class T>
-    class ListNode {
+    struct ListNode {
     public:
-        ListNode() : _next(this), _prev(this) {}
+        ListNode() = default;
 
-        void remove()
-        {
-            _prev->_next = _next;
-            _next->_prev = _prev;
-            _next = _prev = this;
-            _owner         = nullptr;
-        }
+        ListNode(const ListNode&) = delete;
 
-        void insertAfter(ListNode& after, T& value)
-        {
-            remove();
-            _next        = after._next;
-            _prev        = &after;
-            _next->_prev = this;
-            after._next  = this;
-            _owner       = &value;
-        }
+        ListNode& operator=(const ListNode&) = delete;
 
-        bool isHead() const { return _owner == nullptr; }
-
-        ListNode* next() const { return _next->isHead() ? nullptr : _next; }
-
-        ListNode* prev() const { return _next->isHead() ? nullptr : _prev; }
-
-        T* owner() { return _owner; }
-
-    private:
-        ListNode* _next;
-        ListNode* _prev;
-
-        // Rationale:
-        // Storing a pointer to the parent element is expensive.
-        // Technically, it is possible to  obtain an element pointer from a node pointer instead.
-        // However, this would require a downcast to the element type in the case of inheriting from the ListNode.
-        // In the case of the ListNode being a member of the element, ABI specific offset calculations are necessary.
-        // Using of the offsetof macro leads to undefined behavior if the parent element is not a standard layout type.
+        // Note the asymmetry, which:
+        //  * allows for a sentinel node to be used as a head, and
+        //  * makes a pointer to the owner unnecessary.
         //
-        // Consider optimizing memory usage by removing owner if the parent element is a standard layout type.
-        T* _owner = nullptr;
+        // The list is circular when traversing backwards, and linear when traversing forwards.
+        // Because the sentinel node has no owner, the next pointer of the last node is null.
+        T*        next = nullptr;
+        ListNode* prev = this;
     };
 
-    template<typename T>
+    // Free functions to link and unlink nodes.
+    // Rationale: Implementing basic operations as free functions facilitates composition.
+    template<class T, NodeGetter<T, ListNode> NG>
+    void link(ListNode<T>& head, T& element, ListNode<T>& after, NG&& nodeGetter)
+    {
+        auto& nodeElement = nodeGetter(element);
+
+        nodeElement.next = after.next;
+        nodeElement.prev = &after;
+
+        // This complexity is the cost of having an assymetrical link.
+        if (after.next != nullptr) {
+            nodeGetter(after.next).prev = &nodeElement;
+        } else {
+            // We are linking the last element, update the head.
+            head.prev = &nodeElement;
+        }
+        after.next = &element;
+    }
+
+    template<class T, NodeGetter<T, ListNode> NG>
+    void unlink(ListNode<T>& head, T& element, NG&& nodeGetter)
+    {
+        auto& nodeElement = nodeGetter(element);
+        unlink(head, nodeElement, nodeGetter);
+    }
+
+    template<class T, NodeGetter<T, ListNode> NG>
+    void unlink(ListNode<T>& head, ListNode<T>& nodeElement, NG&& nodeGetter)
+    {
+        // This complexity is the cost of having an assymetrical link.
+        if (nodeElement.next != nullptr) {
+            nodeGetter(nodeElement.next).prev = nodeElement.prev;
+        } else {
+            // We are unlinking the last element, update the head.
+            head.prev = nodeElement.prev;
+        }
+        nodeElement.prev->next = nodeElement.next;
+
+        nodeElement.prev = &nodeElement;
+        nodeElement.next = nullptr;
+    }
+
+    template<typename T, NodeGetter<T, ListNode> NG>
     class ListIterator {
     public:
-        using value_type      = T;
-        using difference_type = std::ptrdiff_t;
+        using value_type        = T;
+        using difference_type   = std::ptrdiff_t;
+        using iterator_category = std::bidirectional_iterator_tag;
 
-        ListIterator() : node(nullptr) {}
+        ListIterator() = default;
 
-        explicit ListIterator(ListNode<T>* node) : node(node) {}
+        explicit ListIterator(ListNode<T>& node)
+        requires(std::default_initializable<NG>)
+            : node(&node), nodeGetter{}
+        {}
 
-        const T& operator*() const { return *node->_owner(); }
+        explicit ListIterator(ListNode<T>* node)
+        requires(std::default_initializable<NG>)
+            : node(node), nodeGetter{}
+        {}
 
-        const T* operator->() const { return node->_owner(); }
+        ListIterator(ListNode<T>& node, NG nodeGetter) : node(&node), nodeGetter(std::move(nodeGetter)) {}
+
+        ListIterator(ListNode<T>* node, NG nodeGetter) : node(node), nodeGetter(std::move(nodeGetter)) {}
+
+        T* operator->() const { return node->next; }
+
+        T& operator*() const { return *this->operator->(); }
 
         ListIterator& operator++()
         {
-            node = node->next();
+            node = &nodeGetter(node->next);
             return *this;
         }
 
         ListIterator& operator--()
         {
-            node = node->prev();
+            node = node->prev;
             return *this;
         }
 
         ListIterator operator++(int)
         {
-            auto current = ListIterator(node);
-            node         = node->next();
-
+            auto current = ListIterator(node, nodeGetter);
+            node         = &nodeGetter(node->next);
             return current;
         }
 
         ListIterator operator--(int)
         {
-            auto current = ListIterator(node);
-            node         = node->prev();
-
+            auto current = ListIterator(node, nodeGetter);
+            node         = node->prev;
             return current;
         }
 
         bool operator==(const ListIterator& other) const { return node == other.node; }
 
     private:
-        ListNode<T>* node;
+        ListNode<T>*             node;
+        [[no_unique_address]] NG nodeGetter;
     };
 
-    template<typename T, class NodeGetter = NodeFromBase<T, ListNode>>
+    template<typename T, NodeGetter<T, ListNode> NG = NodeFromBase<T, ListNode>>
     class List {
     public:
+        static_assert(std::bidirectional_iterator<ListIterator<T, NG>>);
+
         template<IsAllocator Alloc>
-    static std::expected<List, Error> make(Alloc& allocator)
+        static std::expected<List, Error> make(Alloc& allocator)
         {
             auto head = construct<ListNode<T>>(allocator);
             if (head == nullptr) {
@@ -117,35 +147,30 @@ namespace rlib::intrusive {
             return List(std::move(head));
         }
 
-        void push_front(T& element)
-        {
-            auto& node = NodeGetter::get(&element);
-            node.insertAfter(*head, element);
-        }
+        void pushFront(T& element) { link(*head, element, *head, NG{}); }
 
-        T* pop_front()
+        T* popFront()
         {
-            auto node = head->next();
-            if (node == nullptr) {
+            auto element = head->next;
+            if (element == nullptr) {
                 return nullptr;
             }
-            auto element = node->owner();
-            node->remove();
+            unlink(*head, *element, NG{});
 
             return element;
         }
 
-        void remove(T& element) { NodeGetter::get(&element).remove(); }
+        void remove(T& element) { unlink(*head, element, NG{}); }
 
-        ListIterator<T> begin() { return ListIterator<T>(head->next()); }
+        ListIterator<T, NG> begin() { return {*head}; }
 
-        ListIterator<T> end() { return ListIterator<T>(nullptr); }
+        ListIterator<T, NG> end() { return {head->prev}; }
 
-        bool empty() const { return head->next() == nullptr; }
+        bool empty() const { return head->next == nullptr; }
 
-        T* front() const { return head->next()->owner(); }
+        T* front() const { return head->next; }
 
-        T* back() const { return head->prev()->owner(); }
+        T* back() const { return head->prev->prev->next; }
 
     private:
         explicit List(OwningPointer<ListNode<T>> head) : head(std::move(head)) {}

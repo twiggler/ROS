@@ -1,7 +1,7 @@
 .PHONY: all loader kernel libr services
 all: loader
 
-loader kernel libr services:
+loader kernel libr:
 	${MAKE} --directory=$@ $(TARGET)
 
 services:

@@ -6,6 +6,7 @@
 #include <libr/pointer.hpp>
 #include <libr/intrusive/skiplist.hpp>
 #include <libr/type_erasure.hpp>
+#include <libr/memory_resource.hpp>
 #include <optional>
 #include <expected>
 
@@ -24,17 +25,9 @@ constexpr std::size_t operator""_GiB(unsigned long long int x)
     return 1024_MiB * x;
 }
 
-struct VirtualMemoryCategory : rlib::ErrorCategory {
-} inline constexpr virtualMemoryCategory = VirtualMemoryCategory{};
-
-inline constexpr auto OutOfPhysicalMemory = rlib::Error(-1, &virtualMemoryCategory);
-inline constexpr auto VirtualRangeInUse   = rlib::Error(-2, &virtualMemoryCategory);
-inline constexpr auto AlreadyMapped       = rlib::Error(-3, &virtualMemoryCategory);
-inline constexpr auto OutOfBounds         = rlib::Error(-4, &virtualMemoryCategory);
-
 struct Block {
-    std::uintptr_t startAddress;
-    std::size_t    size;
+    std::uintptr_t startAddress = 0;
+    std::size_t    size         = 0;
 
     /**
      * Align block such that both the start and end address are a multiple of alignment.
@@ -47,12 +40,16 @@ struct Block {
      */
     Block align(std::size_t alignment) const;
 
-    Block take(std::size_t amount) const;
-
-    Block resize(std::size_t newSize) const;
-
     std::uintptr_t endAddress() const;
 };
+
+struct VirtualMemoryCategory : rlib::ErrorCategory {
+} inline constexpr virtualMemoryCategory = VirtualMemoryCategory{};
+
+inline constexpr auto OutOfPhysicalMemory = rlib::Error(-1, &virtualMemoryCategory);
+inline constexpr auto VirtualRangeInUse   = rlib::Error(-2, &virtualMemoryCategory);
+inline constexpr auto AlreadyMapped       = rlib::Error(-3, &virtualMemoryCategory);
+inline constexpr auto OutOfBounds         = rlib::Error(-4, &virtualMemoryCategory);
 
 class VirtualAddress {
 public:
@@ -79,6 +76,11 @@ public:
 private:
     std::uintptr_t address;
 };
+
+constexpr inline auto StartKernelSpace = VirtualAddress(0xFFFF8000'00000000);
+constexpr inline auto EndKernelSpace   = VirtualAddress(0xFFFFFFFF'FFFFFFFF);
+constexpr inline auto StartUserSpace   = VirtualAddress(std::uintptr_t(0x00000000'00000000));
+constexpr inline auto EndUserSpace     = VirtualAddress(0x00007FFF'FFFFFFFF);
 
 struct IdentityMapping {
     explicit IdentityMapping(std::size_t offset);
@@ -235,11 +237,9 @@ private:
     PageFrameAllocator frameAllocator;
 };
 
-class Region : rlib::intrusive::SkipListNode<Region> {
+class Region : rlib::intrusive::ListNode<Region> {
 public:
     Region(VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlags::Type pageFlags, PageSize pageSize);
-
-    bool overlap(const Region& other) const;
 
     std::optional<rlib::Error>
     mapPage(TableView tableLevel4, PageMapper& pageMapper, std::uint64_t physicalAddress, std::size_t pageIndex);
@@ -259,8 +259,7 @@ public:
     bool operator<(const Region& other) const;
 
 private:
-    friend class rlib::intrusive::SkipList<Region>;
-    friend class rlib::intrusive::NodeFromBase<Region, SkipListNode>;
+    friend class rlib::intrusive::NodeFromBase<Region, ListNode>;
 
     std::size_t pageSizeInBytes() const;
 
@@ -272,13 +271,15 @@ private:
 
 class AddressSpace {
 public:
-    static std::expected<AddressSpace, rlib::Error> make(PageMapper& pageMapper, rlib::Allocator& allocator);
+    static std::expected<AddressSpace, rlib::Error>
+    make(PageMapper& pageMapper, rlib::Allocator& allocator, std::uintptr_t startAddress, std::size_t size);
 
     explicit AddressSpace(
-        PageMapper&                       pageMapper,
-        TableView                         tableLevel4,
-        rlib::intrusive::SkipList<Region> regions,
-        rlib::Allocator&                  allocator
+        PageMapper&                   pageMapper,
+        TableView                     tableLevel4,
+        rlib::intrusive::List<Region> regions,
+        rlib::MemoryResource          memoryResource,
+        rlib::Allocator&              allocator
     );
 
     AddressSpace(AddressSpace&& other);
@@ -291,7 +292,13 @@ public:
     reserve(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
     std::expected<Region*, rlib::Error>
+    reserve(std::size_t size, PageFlags::Type flags, PageSize pageSize);
+
+    std::expected<Region*, rlib::Error>
     allocate(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
+
+    std::expected<Region*, rlib::Error>
+    allocate(std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
     std::optional<rlib::Error>
     mapPageOfRegion(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames);
@@ -305,8 +312,9 @@ public:
     ~AddressSpace();
 
 private:
-    PageMapper*                       pageMapper;
-    TableView                         tableLevel4;
-    rlib::intrusive::SkipList<Region> regions;
-    rlib::Allocator*                  allocator;
+    PageMapper*                   pageMapper;
+    TableView                     tableLevel4;
+    rlib::intrusive::List<Region> regions;
+    rlib::MemoryResource          memoryResource;
+    rlib::Allocator*              allocator;
 };

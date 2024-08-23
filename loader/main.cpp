@@ -2,6 +2,7 @@
 #include <libr/stream.hpp>
 #include <libr/allocator.hpp>
 #include <libr/type_erasure.hpp>
+#include <libr/memory_resource.hpp>
 #include <cstdint>
 #include <bootboot.h>
 #include <ranges>
@@ -54,7 +55,6 @@ private:
     std::span<MMapEnt> memoryMap;
     std::size_t        index;
 };
-
 
 std::expected<Kernel, rlib::Error> makeKernel()
 {

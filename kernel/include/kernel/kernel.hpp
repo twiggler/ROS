@@ -4,8 +4,9 @@
 #include <libr/allocator.hpp>
 #include <libr/stream.hpp>
 #include <libr/intrusive/list.hpp>
-#include "cpu.hpp"
 #include <libr/elf.hpp>
+#include <libr/memory_resource.hpp>
+#include "cpu.hpp"
 
 struct KernelErrorCategory : rlib::ErrorCategory {};
 inline constexpr auto kernelErrorCategory = KernelErrorCategory{};
@@ -97,8 +98,8 @@ private:
     static constexpr auto MessageBufferSize   = std::size_t(256);
     static constexpr auto KernelHeapSize      = std::size_t(1_MiB);
 
-    static std::expected<std::tuple<AddressSpace, Region*>, rlib::Error> makeKernelAddressSpace(
-        TableView rootPageTable, MemoryLayout memoryLayout, PageMapper& pageMapper, rlib::Allocator& allocator
+    static std::optional<rlib::Error> setupKernelAddressSpace(
+        AddressSpace& addressSpace, TableView rootPageTable, MemoryLayout memoryLayout, PageMapper& pageMapper
     );
 
     Thread* kernelThread() const;

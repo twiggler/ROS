@@ -74,6 +74,8 @@ namespace rlib {
 
         constexpr void clear();
 
+        T* release();
+
         Element* get() const;
 
         std::size_t size() const
@@ -235,6 +237,17 @@ namespace rlib {
             }
             deleter(pointer, extent);
         }
+    }
+
+    template<class T>
+    T* OwningPointer<T>::release()
+    {
+        auto p  = pointer;
+        pointer = nullptr;
+        deleter = {};
+        extent  = {};
+
+        return p;
     }
 
     template<class T>

@@ -26,6 +26,7 @@ DerivePointerAlignment: true
 EmptyLineBeforeAccessModifier: Leave
 IndentWidth: 4
 IndentRequires: false
+InsertNewlineAtEOF: true
 ContinuationIndentWidth: 4
 MaxEmptyLinesToKeep: 2
 NamespaceIndentation: All
