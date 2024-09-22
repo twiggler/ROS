@@ -6,8 +6,18 @@
 
 using namespace rlib;
 
-Thread::Thread(Context context, AddressSpace addressSpace) :
-    context(std::move(context)), addressSpace(std::move(addressSpace))
+Thread::Thread(
+    Context                                  context,
+    OwningPointer<AddressSpace>              addressSpace,
+    OwningPointer<mpmcBoundedQueue<Message>> mailbox,
+    Region*                                  ipcBuffer,
+    Region*                                  ipcBufferUserMapping
+) :
+    context(std::move(context)),
+    addressSpace(std::move(addressSpace)),
+    mailbox(std::move(mailbox)),
+    ipcBuffer(ipcBuffer),
+    ipcBufferUserMapping(ipcBufferUserMapping)
 {}
 
 Thread* Thread::fromContext(Context& context)
@@ -17,13 +27,30 @@ Thread* Thread::fromContext(Context& context)
     return reinterpret_cast<Thread*>(&context);
 }
 
-std::expected<Thread*, rlib::Error>
-Thread::make(rlib::Allocator& allocator, AddressSpace addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop)
+std::expected<Thread*, Error> Thread::make(
+    Allocator&                  allocator,
+    OwningPointer<AddressSpace> addressSpace,
+    AddressSpace&               kernelAddressSpace,
+    std::uint64_t               entryPoint,
+    std::uintptr_t              stackTop
+)
 {
     auto context =
-        Context::make(Context::Flags::Type(0), addressSpace.rootTablePhysicalAddress(), entryPoint, stackTop);
+        Context::make(Context::Flags::Type(0), addressSpace->rootTablePhysicalAddress(), entryPoint, stackTop);
 
-    auto threadPtr = rlib::constructRaw<Thread>(allocator, std::move(context), std::move(addressSpace));
+    auto mailbox = mpmcBoundedQueue<Message>::make(MessageBufferSize, allocator);
+    if (mailbox == nullptr) {
+        return std::unexpected(OutOfMemoryError);
+    }
+
+    auto ipcBuffer = kernelAddressSpace.allocate(4_KiB, PageFlags::Present | PageFlags::Writable, PageSize::_4KiB);
+    if (!ipcBuffer) {
+        return std::unexpected(OutOfPhysicalMemory);
+    }
+    
+    auto ipcBufferUserMapping = addressSpace->share(**ipcBuffer, PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible);
+    
+    auto threadPtr = constructRaw<Thread>(allocator, std::move(context), std::move(addressSpace), std::move(mailbox), ipcBuffer, ipcBufferUserMapping);
     if (threadPtr == nullptr) {
         return std::unexpected(OutOfPhysicalMemory);
     }
@@ -53,16 +80,15 @@ Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView
     if (!kernelAddressSpace) {
         return std::unexpected(kernelAddressSpace.error());
     }
-    auto error =
-        setupKernelAddressSpace(*kernelAddressSpace, rootPageTable, memoryLayout, *pageMapper);
+    auto error = setupKernelAddressSpace(**kernelAddressSpace, rootPageTable, memoryLayout, *pageMapper);
     if (error) {
         return std::unexpected(*error);
     }
-    Cpu::setRootPageTable(kernelAddressSpace->rootTablePhysicalAddress());
+    Cpu::setRootPageTable((*kernelAddressSpace)->rootTablePhysicalAddress());
 
     // map kernel heap
     constexpr auto heapFlags  = PageFlags::Present | PageFlags::Writable | PageFlags::NoExecute;
-    auto           heapRegion = kernelAddressSpace->allocate(KernelHeapSize, heapFlags, PageSize::_4KiB);
+    auto           heapRegion = (*kernelAddressSpace)->allocate(KernelHeapSize, heapFlags, PageSize::_4KiB);
     if (!heapRegion) {
         return std::unexpected(heapRegion.error());
     }
@@ -79,7 +105,11 @@ Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView
     }
     auto allocator = makeFallbackAllocator(allocatorStorage);
 
-    auto kernelThread = constructRaw<Thread>(*allocator, Context{}, std::move(*kernelAddressSpace));
+    auto mailbox = mpmcBoundedQueue<Message>::make(Thread::MessageBufferSize, *allocator);
+    if (mailbox == nullptr) {
+        return std::unexpected(OutOfMemoryError);
+    }
+    auto kernelThread = constructRaw<Thread>(*allocator, Context{}, std::move(*kernelAddressSpace), std::move(mailbox));
     if (kernelThread == nullptr) {
         return std::unexpected(OutOfPhysicalMemory);
     }
@@ -89,17 +119,12 @@ Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView
         return std::unexpected(cpu.error());
     }
 
-    auto mailbox = mpmcBoundedQueue<Message>::make(MessageBufferSize, *allocator);
-    if (mailbox == nullptr) {
-        return std::unexpected(OutOfMemoryError);
-    }
-
     auto initrdStart  = memoryLayout.identityMapping.translate(memoryLayout.initrdPhysicalAddress);
-    auto memorySource = rlib::MemorySource(initrdStart.ptr<std::byte>(), memoryLayout.initrdSize);
-    auto inputStream  = rlib::InputStream(std::move(memorySource));
+    auto memorySource = MemorySource(initrdStart.ptr<std::byte>(), memoryLayout.initrdSize);
+    auto inputStream  = InputStream(std::move(memorySource));
 
     // WORKAROUND: work around undefined reference for construct by upcasting allocator (compiler bug?)
-    auto threadList = ThreadList::make(*static_cast<rlib::Allocator*>(allocator));
+    auto threadList = ThreadList::make(*static_cast<Allocator*>(allocator));
     if (!threadList) {
         return std::unexpected(threadList.error());
     }
@@ -112,7 +137,6 @@ Kernel::make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView
         allocator,
         std::move(inputStream),
         std::move(*threadList),
-        std::move(*mailbox),
         memoryLayout.framebufferStart
     );
 }
@@ -131,7 +155,7 @@ std::optional<Error> Kernel::setupKernelAddressSpace(
     }
     for (auto physicalAddress = std::uint64_t(0); physicalAddress < memoryLayout.totalPhysicalMemory;
          physicalAddress += 1_GiB) {
-        auto error = addressSpace.mapPageOfRegion(**identityMapRegion, physicalAddress, physicalAddress / 1_GiB);
+        auto error = (*identityMapRegion)->mapPage(physicalAddress, physicalAddress / 1_GiB);
         if (error) {
             return *error;
         }
@@ -153,7 +177,7 @@ std::optional<Error> Kernel::setupKernelAddressSpace(
         if (!physicalKernelCodePageEntry) {
             return UnexpectedMemoryLayout;
         }
-        addressSpace.mapPageOfRegion(**kernelCodeRegion, *physicalKernelCodePageEntry, frame);
+        (*kernelCodeRegion)->mapPage(*physicalKernelCodePageEntry, frame);
     }
 
     // map kernel data as non-executable
@@ -173,7 +197,7 @@ std::optional<Error> Kernel::setupKernelAddressSpace(
         if (!physicalKernelDataPageEntry) {
             return UnexpectedMemoryLayout;
         }
-        addressSpace.mapPageOfRegion(**kernelDataRegion, *physicalKernelDataPageEntry, frame);
+        (*kernelDataRegion)->mapPage(*physicalKernelDataPageEntry, frame);
     }
 
     // map kernel stack
@@ -185,7 +209,7 @@ std::optional<Error> Kernel::setupKernelAddressSpace(
 
     auto frame = std::size_t(0);
     for (; frame < (KernelStackSize - memoryLayout.initialKernelStackSize) / 4_KiB; frame++) {
-        auto error = addressSpace.allocatePageOfRegion(**kernelStackRegion, frame);
+        auto error = (*kernelStackRegion)->allocatePage(frame);
         if (error) {
             return *error;
         }
@@ -195,7 +219,7 @@ std::optional<Error> Kernel::setupKernelAddressSpace(
         if (!physicalKernelStackPageEntry) {
             return UnexpectedMemoryLayout;
         }
-        addressSpace.mapPageOfRegion(**kernelStackRegion, *physicalKernelStackPageEntry, frame);
+        (*kernelStackRegion)->mapPage(*physicalKernelStackPageEntry, frame);
     }
 
     // map framebuffer
@@ -212,7 +236,7 @@ std::optional<Error> Kernel::setupKernelAddressSpace(
         if (!physicalFramebufferPageEntry) {
             return UnexpectedMemoryLayout;
         }
-        addressSpace.mapPageOfRegion(**framebufferRegion, *physicalFramebufferPageEntry, frame);
+        (*framebufferRegion)->mapPage(*physicalFramebufferPageEntry, frame);
     }
 
     return {};
@@ -220,21 +244,15 @@ std::optional<Error> Kernel::setupKernelAddressSpace(
 
 
 Kernel::Kernel(
-    Thread*                                        kernelThread,
-    PageMapper*                                    pageMapper,
-    Cpu&                                           cpu,
-    rlib::Allocator*                               allocator,
-    InputStream<MemorySource>                      initrd,
-    ThreadList                                     threads,
-    rlib::OwningPointer<mpmcBoundedQueue<Message>> mailbox,
-    std::uint32_t*                                 framebuffer
+    Thread*                   kernelThread,
+    PageMapper*               pageMapper,
+    Cpu&                      cpu,
+    Allocator*                allocator,
+    InputStream<MemorySource> initrd,
+    ThreadList                threads,
+    std::uint32_t*            framebuffer
 ) :
-    pageMapper(pageMapper),
-    cpu(&cpu),
-    allocator(allocator),
-    threads(std::move(threads)),
-    mailbox(std::move(mailbox)),
-    framebuffer(framebuffer)
+    pageMapper(pageMapper), cpu(&cpu), allocator(allocator), threads(std::move(threads)), framebuffer(framebuffer)
 {
     this->threads.pushFront(*kernelThread);
 
@@ -267,17 +285,17 @@ void Kernel::run()
         }
 
         std::optional<Message> message;
-        while ((message = mailbox->dequeue())) {
+        while ((message = kernelThread()->mailbox->dequeue())) {
             // Every message is a kill-thread message
-            killThread(*allocator, *message->origin);
+            killThread(*allocator, message->senderId);
         }
     }
 }
 
-std::expected<Thread*, rlib::Error>
-Kernel::createThread(AddressSpace addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop)
+std::expected<Thread*, Error>
+Kernel::createThread(OwningPointer<AddressSpace> addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop)
 {
-    auto thread = Thread::make(*allocator, std::move(addressSpace), entryPoint, stackTop);
+    auto thread = Thread::make(*allocator, std::move(addressSpace), *kernelThread()->addressSpace, entryPoint, stackTop);
     if (!thread) {
         return std::unexpected(thread.error());
     }
@@ -287,10 +305,10 @@ Kernel::createThread(AddressSpace addressSpace, std::uint64_t entryPoint, std::u
     return thread;
 }
 
-void Kernel::killThread(rlib::Allocator& allocator, Thread& thread)
+void Kernel::killThread(Allocator& allocator, Thread& thread)
 {
     threads.remove(thread);
-    rlib::destruct(&thread, allocator);
+    destruct(&thread, allocator);
 }
 
 void Kernel::scheduleThread(Thread& thread)
@@ -315,9 +333,10 @@ std::expected<Thread*, Error> Kernel::loadProcess(InputStream<MemorySource>& elf
     // This leaves the kernel open to Meltdown and Spectre attacks, especially since the kernel identity maps all physical memory.
     // Implement KPTI to fix this.
     // Alternatively, mininmize the amount of kernel code and data that is mapped into the process address space.
-    processAddressSpace->shallowCopyRootMapping(
-        kernelThread()->addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF)
-    );
+    (*processAddressSpace)
+        ->shallowCopyRootMapping(
+            kernelThread()->addressSpace, VirtualAddress(0xFFFF8000'00000000), VirtualAddress(0xFFFFFFFF'FFFFFFF)
+        );
 
     for (const auto& segment : parsedElf->segments) {
         if (segment.type != Elf::Segment::Type::Load) {
@@ -336,7 +355,7 @@ std::expected<Thread*, Error> Kernel::loadProcess(InputStream<MemorySource>& elf
                 flags |= PageFlags::Writable;
             }
         }
-        auto region = processAddressSpace->reserve(segment.virtualAddress, segment.fileSize, flags, PageSize::_4KiB);
+        auto region = (*processAddressSpace)->reserve(segment.virtualAddress, segment.fileSize, flags, PageSize::_4KiB);
         if (region == nullptr) {
             return std::unexpected(OutOfPhysicalMemory);
         }
@@ -356,7 +375,7 @@ std::expected<Thread*, Error> Kernel::loadProcess(InputStream<MemorySource>& elf
                 return std::unexpected(CannotCopySegment);
             }
             // Map the region into the process address space.
-            auto error = processAddressSpace->mapPageOfRegion(**region, frame->physicalAddress, pageIndex);
+            auto error = (*region)->mapPage(frame->physicalAddress, pageIndex);
             if (error) {
                 return std::unexpected(CannotMapProcessMemory);
             }
@@ -368,10 +387,16 @@ std::expected<Thread*, Error> Kernel::loadProcess(InputStream<MemorySource>& elf
     }
 
     auto stackFlags = PageFlags::Present | PageFlags::Writable | PageFlags::UserAccessible | PageFlags::NoExecute;
-    auto stack      = processAddressSpace->allocate(64_KiB, stackFlags, PageSize::_4KiB);
+    auto stack      = (*processAddressSpace)->allocate(64_KiB, stackFlags, PageSize::_4KiB);
     if (!stack) {
         return std::unexpected(stack.error());
     }
+
+    auto ipcBuffer = kernelThread()->addressSpace->allocate(4_KiB, stackFlags, PageSize::_4KiB);
+    if (!ipcBuffer) {
+        return std::unexpected(ipcBuffer.error());
+    }
+
     auto thread = createThread(std::move(*processAddressSpace), parsedElf->startAddress, (*stack)->end());
     if (!thread) {
         return std::unexpected(thread.error());

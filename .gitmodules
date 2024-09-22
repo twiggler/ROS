@@ -1,3 +1,6 @@
 [submodule "kernel/bootboot"]
 	path = loader/bootboot
 	url = https://gitlab.com/bztsrc/bootboot.git
+[submodule "libr/ext/slotmap"]
+	path = libr/ext/slotmap
+	url = https://github.com/twiggler/slotmap.git

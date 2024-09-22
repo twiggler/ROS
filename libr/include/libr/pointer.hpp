@@ -76,7 +76,9 @@ namespace rlib {
 
         T* release();
 
-        Element* get() const;
+        Element* get() const { return pointer; }
+
+        operator bool() const { return pointer != nullptr; };
 
         std::size_t size() const
         requires(std::is_array_v<T>);
@@ -248,12 +250,6 @@ namespace rlib {
         extent  = {};
 
         return p;
-    }
-
-    template<class T>
-    OwningPointer<T>::Element* OwningPointer<T>::get() const
-    {
-        return pointer;
     }
 
     template<class T>

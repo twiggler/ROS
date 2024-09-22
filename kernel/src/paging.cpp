@@ -338,14 +338,15 @@ std::optional<rlib::Error> PageMapper::allocateAndMapRange(
 
 std::size_t PageMapper::unmapAndDeallocateRange(TableView addressSpace, VirtualAddress virtualAddress, std::size_t size)
 {
-    auto freed = std::size_t(0);
+    auto freed  = std::size_t(0);
+    auto offset = std::size_t(0);
 
     while (freed < size) {
-        auto block = unmapAndDeallocate(addressSpace, virtualAddress + freed);
-        if (!block) {
-            return freed;
+        auto block = unmapAndDeallocate(addressSpace, virtualAddress + offset);
+        if (block) {
+            freed += block->size;
         }
-        freed += block->size;
+        offset += block->size;
     }
 
     return freed;
@@ -373,8 +374,18 @@ TableView PageMapper::mapTableView(TableEntryView entry) const
     return mapTableView(entry.physicalAddress());
 }
 
-Region::Region(VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlags::Type pageFlags, PageSize pageSize) :
-    _start(virtualAddress), _sizeInFrames(sizeInFrames), pageFlags(pageFlags), _pageSize(pageSize)
+Region::Region(
+    AddressSpace&   addressSpace,
+    VirtualAddress  virtualAddress,
+    std::size_t     sizeInFrames,
+    PageFlags::Type pageFlags,
+    PageSize        pageSize
+) :
+    addressSpace(&addressSpace),
+    _start(virtualAddress),
+    _sizeInFrames(sizeInFrames),
+    pageFlags(pageFlags),
+    _pageSize(pageSize)
 {}
 
 bool Region::operator<(const Region& other) const
@@ -382,30 +393,31 @@ bool Region::operator<(const Region& other) const
     return end() <= other._start;
 }
 
-std::optional<rlib::Error>
-Region::mapPage(TableView tableLevel4, PageMapper& pageMapper, std::uint64_t physicalAddress, std::size_t pageIndex)
+std::optional<rlib::Error> Region::mapPage(std::uint64_t physicalAddress, std::size_t pageIndex)
 {
     if (pageIndex > _sizeInFrames) {
         return OutOfBounds;
     }
 
     auto offset = pageIndex * pageSizeInBytes();
-    return pageMapper.map(tableLevel4, _start + offset, physicalAddress, _pageSize, pageFlags);
+    return addressSpace->pageMapper->map(
+        addressSpace->tableLevel4, _start + offset, physicalAddress, _pageSize, pageFlags
+    );
 }
 
-std::optional<rlib::Error> Region::allocatePage(TableView tableLevel4, PageMapper& pageMapper, std::size_t pageIndex)
+std::optional<rlib::Error> Region::allocatePage(std::size_t pageIndex)
 {
     if (pageIndex > _sizeInFrames) {
         return OutOfBounds;
     }
 
     auto offset = pageIndex * pageSizeInBytes();
-    return pageMapper.allocateAndMap(tableLevel4, _start + offset, pageFlags);
+    return addressSpace->pageMapper->allocateAndMap(addressSpace->tableLevel4, _start + offset, pageFlags);
 }
 
-std::optional<rlib::Error> Region::allocate(TableView tableLevel4, PageMapper& pageMapper)
+std::optional<rlib::Error> Region::allocate()
 {
-    return pageMapper.allocateAndMapRange(tableLevel4, _start, pageFlags, _sizeInFrames);
+    return addressSpace->pageMapper->allocateAndMapRange(addressSpace->tableLevel4, _start, pageFlags, _sizeInFrames);
 }
 
 VirtualAddress Region::start() const
@@ -433,7 +445,7 @@ std::size_t Region::pageSizeInBytes() const
     return static_cast<std::uint32_t>(_pageSize);
 };
 
-std::expected<AddressSpace, rlib::Error>
+std::expected<rlib::OwningPointer<AddressSpace>, rlib::Error>
 AddressSpace::make(PageMapper& pageMapper, rlib::Allocator& allocator, std::uintptr_t startAddress, std::size_t size)
 {
     auto tableLevel4 = pageMapper.createPageTable();
@@ -451,7 +463,14 @@ AddressSpace::make(PageMapper& pageMapper, rlib::Allocator& allocator, std::uint
         return std::unexpected(memoryResource.error());
     }
 
-    return AddressSpace(pageMapper, *tableLevel4, std::move(*regions), std::move(*memoryResource), allocator);
+    auto addressSpace = rlib::construct<AddressSpace>(
+        allocator, pageMapper, *tableLevel4, std::move(*regions), std::move(*memoryResource), allocator
+    );
+    if (addressSpace == nullptr) {
+        return std::unexpected(rlib::OutOfMemoryError);
+    }
+
+    return addressSpace;
 }
 
 AddressSpace::AddressSpace(
@@ -526,7 +545,7 @@ AddressSpace::allocate(VirtualAddress start, std::size_t size, PageFlags::Type f
         return std::unexpected(OutOfPhysicalMemory);
     }
 
-    auto error = region.value()->allocate(tableLevel4, *pageMapper);
+    auto error = region.value()->allocate();
     if (error) {
         return std::unexpected(*error);
     }
@@ -541,7 +560,7 @@ std::expected<Region*, rlib::Error> AddressSpace::allocate(std::size_t size, Pag
         return std::unexpected(OutOfPhysicalMemory);
     }
 
-    auto error = region.value()->allocate(tableLevel4, *pageMapper);
+    auto error = region.value()->allocate();
     if (error) {
         return std::unexpected(*error);
     }
@@ -549,15 +568,34 @@ std::expected<Region*, rlib::Error> AddressSpace::allocate(std::size_t size, Pag
     return region;
 }
 
-std::optional<rlib::Error>
-AddressSpace::mapPageOfRegion(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames)
+std::optional<std::uint64_t> Region::queryPhysicalAddress(std::size_t pageIndex) const
 {
-    return region.mapPage(tableLevel4, *pageMapper, physicalAddress, offsetInFrames);
+    if (pageIndex > _sizeInFrames) {
+        return {};
+    }
+
+    auto offset = pageIndex * pageSizeInBytes();
+    return addressSpace->pageMapper->read(addressSpace->tableLevel4, _start + offset);
 }
 
-std::optional<rlib::Error> AddressSpace::allocatePageOfRegion(Region& region, std::size_t offsetInFrames)
-{
-    return region.allocatePage(tableLevel4, *pageMapper, offsetInFrames);
+std::expected<Region*, rlib::Error> AddressSpace::share(Region& region, PageFlags::Type flags) {
+    auto newRegion = reserve(region.size(), flags, region._pageSize);
+    if (!newRegion) {
+        return std::unexpected(newRegion.error());
+    }
+
+    for (auto frame = std::size_t(0); frame > region.sizeInFrames(); frame++) {
+        auto physicalAddress = region.queryPhysicalAddress(frame);
+        if (!physicalAddress) {
+            return std::unexpected(NotMapped);
+        }
+        auto error = (*newRegion)->mapPage(*physicalAddress, frame);
+        if (error) {
+            return std::unexpected(*error);
+        }
+    }
+
+    return newRegion;
 }
 
 AddressSpace::~AddressSpace()

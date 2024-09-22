@@ -49,7 +49,8 @@ struct VirtualMemoryCategory : rlib::ErrorCategory {
 inline constexpr auto OutOfPhysicalMemory = rlib::Error(-1, &virtualMemoryCategory);
 inline constexpr auto VirtualRangeInUse   = rlib::Error(-2, &virtualMemoryCategory);
 inline constexpr auto AlreadyMapped       = rlib::Error(-3, &virtualMemoryCategory);
-inline constexpr auto OutOfBounds         = rlib::Error(-4, &virtualMemoryCategory);
+inline constexpr auto NotMapped           = rlib::Error(-4, &virtualMemoryCategory);
+inline constexpr auto OutOfBounds         = rlib::Error(-5, &virtualMemoryCategory);
 
 class VirtualAddress {
 public:
@@ -237,16 +238,20 @@ private:
     PageFrameAllocator frameAllocator;
 };
 
+class AddressSpace;
+
 class Region : rlib::intrusive::ListNode<Region> {
 public:
-    Region(VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlags::Type pageFlags, PageSize pageSize);
+    Region(AddressSpace& addressSpace, VirtualAddress virtualAddress, std::size_t sizeInFrames, PageFlags::Type pageFlags, PageSize pageSize);
 
     std::optional<rlib::Error>
-    mapPage(TableView tableLevel4, PageMapper& pageMapper, std::uint64_t physicalAddress, std::size_t pageIndex);
+    mapPage(std::uint64_t physicalAddress, std::size_t pageIndex);
 
-    std::optional<rlib::Error> allocatePage(TableView tableLevel4, PageMapper& pageMapper, std::size_t pageIndex);
+    std::optional<rlib::Error> allocatePage(std::size_t pageIndex);
 
-    std::optional<rlib::Error> allocate(TableView tableLevel4, PageMapper& pageMapper);
+    std::optional<rlib::Error> allocate();
+
+    std::optional<std::uint64_t> queryPhysicalAddress(std::size_t pageIndex) const;
 
     VirtualAddress start() const;
 
@@ -256,13 +261,17 @@ public:
 
     std::size_t sizeInFrames() const;
 
+
+
     bool operator<(const Region& other) const;
 
 private:
     friend class rlib::intrusive::NodeFromBase<Region, ListNode>;
+    friend class AddressSpace;
 
     std::size_t pageSizeInBytes() const;
 
+    AddressSpace*   addressSpace;
     VirtualAddress  _start;
     std::size_t     _sizeInFrames;
     PageFlags::Type pageFlags;
@@ -271,7 +280,7 @@ private:
 
 class AddressSpace {
 public:
-    static std::expected<AddressSpace, rlib::Error>
+    static std::expected<rlib::OwningPointer<AddressSpace>, rlib::Error>
     make(PageMapper& pageMapper, rlib::Allocator& allocator, std::uintptr_t startAddress, std::size_t size);
 
     explicit AddressSpace(
@@ -291,27 +300,24 @@ public:
     std::expected<Region*, rlib::Error>
     reserve(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
-    std::expected<Region*, rlib::Error>
-    reserve(std::size_t size, PageFlags::Type flags, PageSize pageSize);
+    std::expected<Region*, rlib::Error> reserve(std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
     std::expected<Region*, rlib::Error>
     allocate(VirtualAddress start, std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
-    std::expected<Region*, rlib::Error>
-    allocate(std::size_t size, PageFlags::Type flags, PageSize pageSize);
-
-    std::optional<rlib::Error>
-    mapPageOfRegion(Region& region, std::uint64_t physicalAddress, std::size_t offsetInFrames);
-
-    std::optional<rlib::Error> allocatePageOfRegion(Region& region, std::size_t offsetInFrames);
+    std::expected<Region*, rlib::Error> allocate(std::size_t size, PageFlags::Type flags, PageSize pageSize);
 
     std::uintptr_t rootTablePhysicalAddress() const;
 
     void shallowCopyRootMapping(const AddressSpace& from, VirtualAddress startAddress, VirtualAddress endAddress);
 
+    std::expected<Region*, rlib::Error> share(Region& region, PageFlags::Type flags);
+    
     ~AddressSpace();
 
 private:
+    friend class Region;
+
     PageMapper*                   pageMapper;
     TableView                     tableLevel4;
     rlib::intrusive::List<Region> regions;

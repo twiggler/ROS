@@ -53,9 +53,6 @@ struct Context {
     Flags::Type   flags;
 } __attribute__((packed));
 
-// Assert no padding, otherwise assembler code will break.
-static_assert(sizeof(Context) == 10 * sizeof(std::uint64_t) + sizeof(std::uint16_t));
-
 enum class GateType : std::uint8_t {
     Interrupt = 0xe,
     Trap      = 0xf
@@ -78,16 +75,12 @@ struct __attribute__((packed)) TaskStateSegment {
     std::uint16_t iobp;
 };
 
-
 struct InterruptFrame;
 
 struct Core {
     std::uintptr_t kernelStack;
     Context*       activeContext;
 } __attribute__((packed));
-
-// Assert no padding, otherwise assembler code will break.
-static_assert(sizeof(Core) == 2 * sizeof(std::uint64_t));
 
 struct CpuObserver {
     virtual void onInterrupt(std::uint8_t Irq) = 0;

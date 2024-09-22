@@ -206,18 +206,23 @@ loadContext:
     mov     r11, [rdi + Context.rflags]
     o64 sysret
 
-
+; rdi:  receiver id
+; rsi:  message size
+; rdx:  param 1
+; rcx:  param 2
+; r8:   param 3
+; r9:   param 4
 systemCallThunk:
-    mov     rdi, qword [gs:Core.activeContext]
-    and     dword [rdi + Context.flags], !FlagsKernelMode
-    mov     [rdi + Context.rflags], r11
-    mov     [rdi + Context.rbx], rbx
-    mov     [rdi + Context.rbp], rbp
-    mov     [rdi + Context.rsp], rsp
-    mov     [rdi + Context.r12], r12
-    mov     [rdi + Context.r13], r13
-    mov     [rdi + Context.r14], r14
-    mov     [rdi + Context.r15], r15
+    mov     rax, qword [gs:Core.activeContext]
+    and     dword [rax + Context.flags], !FlagsKernelMode
+    mov     [rax + Context.rflags], r11
+    mov     [rax + Context.rbx], rbx
+    mov     [rax + Context.rbp], rbp
+    mov     [rax + Context.rsp], rsp
+    mov     [rax + Context.r12], r12
+    mov     [rax + Context.r13], r13
+    mov     [rax + Context.r14], r14
+    mov     [rax + Context.r15], r15
 
     mov     rsp, qword [gs:Core.kernelStack]
     call    systemCallHandler

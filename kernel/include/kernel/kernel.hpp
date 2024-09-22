@@ -7,6 +7,7 @@
 #include <libr/elf.hpp>
 #include <libr/memory_resource.hpp>
 #include "cpu.hpp"
+#include "ipc.hpp"
 
 struct KernelErrorCategory : rlib::ErrorCategory {};
 inline constexpr auto kernelErrorCategory = KernelErrorCategory{};
@@ -19,26 +20,36 @@ inline constexpr auto CannotCopySegment        = rlib::Error{-5, &kernelErrorCat
 inline constexpr auto UnexpectedMemoryLayout   = rlib::Error{-6, &kernelErrorCategory};
 
 struct Thread {
+    static constexpr auto MessageBufferSize = std::size_t(256);
+
     static Thread* fromContext(Context& context);
 
-    static std::expected<Thread*, rlib::Error>
-    make(rlib::Allocator& allocator, AddressSpace addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop);
+    static std::expected<Thread*, rlib::Error> make(
+        rlib::Allocator&                  allocator,
+        rlib::OwningPointer<AddressSpace> addressSpace,
+        AddressSpace&                     kernelAddressSpace,
+        std::uint64_t                     entryPoint,
+        std::uintptr_t                    stackTop
+    );
 
-    Thread(Context context, AddressSpace addressSpace);
+    Thread(
+        Context                                              context,
+        rlib::OwningPointer<AddressSpace>                    addressSpace,
+        rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>> mailbox,
+        Region*                                              ipcBuffer,
+        Region*                                              ipcBufferUserMapping
+    );
 
-    Context context;
-
-    AddressSpace addressSpace;
-
-    rlib::intrusive::ListNode<Thread> listNode;
+    Context                                              context;
+    rlib::OwningPointer<AddressSpace>                    addressSpace;
+    rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>> mailbox;
+    Region*                                              ipcBuffer = nullptr;
+    Region*                                              ipcBufferUserMapping = nullptr;
+    rlib::intrusive::ListNode<Thread>                    listNode;
 };
 
 struct HardwareInterrupt {
     std::uint8_t IRQ;
-};
-
-struct Message {
-    Thread* origin;
 };
 
 struct MemoryLayout {
@@ -65,14 +76,13 @@ public:
     make(MemoryLayout memoryLayout, std::byte* initialHeapStorage, TableView rootPageTable);
 
     Kernel(
-        Thread*                                              kernelThread,
-        PageMapper*                                          pageMapper,
-        Cpu&                                                 cpu,
-        rlib::Allocator*                                     allocator,
-        rlib::InputStream<rlib::MemorySource>                initrd,
-        ThreadList                                           threads,
-        rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>> mailbox,
-        std::uint32_t*                                       framebuffer
+        Thread*                               kernelThread,
+        PageMapper*                           pageMapper,
+        Cpu&                                  cpu,
+        rlib::Allocator*                      allocator,
+        rlib::InputStream<rlib::MemorySource> initrd,
+        ThreadList                            threads,
+        std::uint32_t*                        framebuffer
     );
 
     Kernel(const Kernel&) = delete;
@@ -82,7 +92,7 @@ public:
     void run();
 
     std::expected<Thread*, rlib::Error>
-    createThread(AddressSpace addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop);
+    createThread(rlib::OwningPointer<AddressSpace> addressSpace, std::uint64_t entryPoint, std::uintptr_t stackTop);
 
     void scheduleThread(Thread& thread);
 
@@ -95,7 +105,6 @@ public:
 private:
     static constexpr auto KernelStackSize     = std::size_t(64_KiB);
     static constexpr auto InterruptBufferSize = std::size_t(256);
-    static constexpr auto MessageBufferSize   = std::size_t(256);
     static constexpr auto KernelHeapSize      = std::size_t(1_MiB);
 
     static std::optional<rlib::Error> setupKernelAddressSpace(
@@ -112,7 +121,6 @@ private:
     rlib::Allocator*                                               allocator;
     rlib::spscBoundedQueue<HardwareInterrupt, InterruptBufferSize> interrupts;
     ThreadList                                                     threads;
-    rlib::OwningPointer<rlib::mpmcBoundedQueue<Message>>           mailbox;
     std::uint32_t*                                                 framebuffer;
     Thread*                                                        service;
 };
